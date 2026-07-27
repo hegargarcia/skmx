@@ -11,6 +11,7 @@ type Asked = { message: string; options?: unknown };
  */
 function fakePrompt(answers: unknown[]) {
   const asked: Asked[] = [];
+  const warnings: string[] = [];
   const next = (message: string, options?: unknown) => {
     asked.push({ message, options });
     return Promise.resolve(answers[asked.length - 1]);
@@ -18,10 +19,18 @@ function fakePrompt(answers: unknown[]) {
 
   const prompt = ((message: string, options?: unknown) => next(message, options)) as PromptApi & {
     asked: Asked[];
+    warnings: string[];
   };
   prompt.asked = asked;
+  prompt.warnings = warnings;
   prompt.multiselect = next as PromptApi["multiselect"];
   prompt.select = next as PromptApi["select"];
+  prompt.log = {
+    warn: (message: string) => void warnings.push(message),
+    info: () => {},
+    success: () => {},
+    error: () => {},
+  } as PromptApi["log"];
   return prompt;
 }
 
@@ -52,11 +61,28 @@ test("lists each skill once, hinting which agents hold it", async () => {
 
   expect(prompt.asked[0]?.options).toMatchObject({
     options: [
-      { label: "showrunner", hint: "claude, agents" },
-      { label: "notes", hint: "claude, agents — contents differ" },
+      { label: "showrunner", hint: "claude · agents" },
+      { label: "notes", hint: "claude · agents  ⚠ contents differ" },
     ],
     min: 1,
   });
+});
+
+test("warns up front about the skills that are not the same everywhere", async () => {
+  const prompt = fakePrompt([[]]);
+
+  await pickSkills(prompt, groups, []);
+
+  expect(prompt.warnings).toHaveLength(1);
+  expect(prompt.warnings[0]).toContain("⚠ notes is not the same everywhere");
+});
+
+test("says nothing up front when every copy matches", async () => {
+  const prompt = fakePrompt([[]]);
+
+  await pickSkills(prompt, [groups[0]!], []);
+
+  expect(prompt.warnings).toEqual([]);
 });
 
 test("does not ask which copy to push when they hold the same files", async () => {
@@ -75,7 +101,7 @@ test("asks which copy to push when they differ", async () => {
     { name: "notes", path: "/home/me/.agents/skills/notes" },
   ]);
   expect(prompt.asked[1]).toMatchObject({
-    message: "Which copy of notes should be pushed?",
+    message: "⚠ Copies of notes differ — which one wins?",
     options: { options: [{ label: "claude" }, { label: "agents" }] },
   });
 });

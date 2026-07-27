@@ -17,13 +17,19 @@ bun src/index.ts setup
 listing each skill **once** with the agents that hold it:
 
 ```
-◻ personal-code-style   claude, agents — contents differ
-◻ showrunner            claude, agents
+WARN ⚠ personal-code-style is not the same everywhere — you will choose which copy to push
+
+? Which skills should be synced?
+> [ ] personal-code-style (claude · agents  ⚠ contents differ)
+  [ ] showrunner (claude · agents)
 ```
 
 Copies are compared by content, not by path, so a skill kept in two places appears
 as one choice. When the copies do differ only one can be the source, so `setup` asks
-which of them to push.
+which of them wins.
+
+Prompt rows are drawn as a single line in a single colour, so the `⚠` carries the
+warning inside the list; the red belongs to the warning line above it.
 
 It then lists your repos through the `gh` CLI — including an option to create one —
 and asks where the skills should live. There is no OAuth flow of its own; `gh` holds

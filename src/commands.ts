@@ -18,6 +18,7 @@ import {
 } from "./cron.ts";
 import { readLastSync } from "./state.ts";
 import { runSync } from "./sync.ts";
+import { ARROW, BULLET, label, mark, OK, PAUSED, SEPARATOR, toneFor, type Tone } from "./ui.ts";
 
 const STALE_AFTER_MS = 26 * 60 * 60 * 1000;
 
@@ -47,12 +48,13 @@ export const setup = defineCommand({
     await installSchedule(flags.at, config);
     prompt.note(
       [
-        `Skills: ${config.skills.map((skill) => skill.name).join(", ")}`,
-        `Repo:   ${config.repo} (${config.branch})`,
+        `${config.skills.map((skill) => skill.name).join(SEPARATOR)}`,
+        `${ARROW} ${config.repo} (${config.branch})`,
         announce("Scheduled", flags.at),
       ].join("\n"),
+      "skill-sync",
     );
-    console.log("Run `skill-sync sync` to push them now, or `skill-sync status` to check on it.");
+    prompt.outro(`${OK} Run \`skill-sync sync\` to push them now`);
   },
 });
 
@@ -65,7 +67,7 @@ export const start = defineCommand({
     const time = existing ?? MIDNIGHT;
 
     await installSchedule(time, config);
-    console.log(announce(existing ? "Resumed" : "Scheduled", time));
+    console.log(mark("ok", announce(existing ? "Resumed" : "Scheduled", time)));
   },
 });
 
@@ -76,8 +78,8 @@ export const stop = defineCommand({
     const paused = await pauseSchedule(await loadConfig());
     console.log(
       paused
-        ? "Nightly sync paused — run `skill-sync start` to resume."
-        : "No nightly sync was scheduled.",
+        ? mark("paused", "Nightly sync paused — run `skill-sync start` to resume")
+        : mark("idle", "No nightly sync was scheduled"),
     );
   },
 });
@@ -90,42 +92,48 @@ export const status = defineCommand({
     const schedule = await readSchedule(config);
     const last = await readLastSync(config.statePath);
     const stale = last !== null && Date.now() - Date.parse(last.finishedAt) > STALE_AFTER_MS;
-    const health = !schedule
-      ? "not scheduled — run `skill-sync setup`"
+    const health: { tone: Tone; text: string } = !schedule
+      ? { tone: "idle", text: "not scheduled — run `skill-sync setup`" }
       : schedule.paused
-        ? "paused — run `skill-sync start` to resume"
+        ? { tone: "paused", text: "paused — run `skill-sync start` to resume" }
         : !(await isRegistered())
-          ? "missing from the OS scheduler — run `skill-sync start`"
+          ? { tone: "warn", text: "missing from the OS scheduler — run `skill-sync start`" }
           : last === null
-            ? "pending — scheduled but has not run yet"
+            ? { tone: "idle", text: "pending — scheduled but has not run yet" }
             : last.status !== "ok"
-              ? `${last.status} — see last sync`
+              ? { tone: "warn", text: `${last.status} — see last sync` }
               : stale
-                ? "stale — no successful sync in the last 26 hours"
-                : "ok";
+                ? { tone: "warn", text: "stale — no successful sync in the last 26 hours" }
+                : { tone: "ok", text: "ok" };
     const active = schedule !== null && !schedule.paused;
 
     const lines = [
       [
         "schedule",
         schedule
-          ? `${formatTimeOfDay(schedule)} daily${schedule.paused ? " (paused)" : ""}`
+          ? `${formatTimeOfDay(schedule)} daily${schedule.paused ? ` ${PAUSED} paused` : ""}`
           : "not scheduled",
       ],
       ["next run", active ? formatDateTime(nextRun(schedule)) : "—"],
       [
         "last sync",
         last
-          ? `${formatDateTime(new Date(last.finishedAt))} — ${last.status}: ${last.summary}` +
-            (last.commit ? ` (${last.commit})` : "")
+          ? mark(
+              toneFor(last.status),
+              `${formatDateTime(new Date(last.finishedAt))} ${last.status}: ${last.summary}` +
+                (last.commit ? ` (${last.commit})` : ""),
+            )
           : "never",
       ],
-      ["health", health],
-      ["repo", config.repo ? `${config.repo} (${config.branch})` : "not configured"],
+      ["health", mark(health.tone, health.text)],
+      [
+        "repo",
+        config.repo ? `${config.repo} ${SEPARATOR.trim()} ${config.branch}` : "not configured",
+      ],
       [
         "skills",
         config.skills.length > 0
-          ? config.skills.map((skill) => skill.name).join(", ")
+          ? config.skills.map((skill) => skill.name).join(SEPARATOR)
           : "none selected",
       ],
       [
@@ -136,9 +144,9 @@ export const status = defineCommand({
       ["state", config.stateDir],
     ] as const;
 
-    console.log("skill-sync");
-    for (const [label, value] of lines) console.log(`  ${label.padEnd(10)}${value}`);
-    if (!healthy(health)) process.exit(1);
+    console.log(`${BULLET} skill-sync`);
+    for (const [name, value] of lines) console.log(`  ${label(name.padEnd(10))}${value}`);
+    if (health.tone === "warn") process.exit(1);
   },
 });
 
@@ -148,7 +156,10 @@ export const sync = defineCommand({
   async handler() {
     const record = await runSync(await loadConfig());
     console.log(
-      `${formatDateTime(new Date(record.finishedAt))} ${record.status}: ${record.summary}`,
+      mark(
+        toneFor(record.status),
+        `${formatDateTime(new Date(record.finishedAt))} ${record.status}: ${record.summary}`,
+      ),
     );
     if (record.status !== "ok") process.exit(1);
   },
@@ -156,11 +167,7 @@ export const sync = defineCommand({
 
 const announce = (verb: string, time: TimeOfDay) =>
   `${verb} nightly sync at ${formatTimeOfDay(time)} ` +
-  `(next run ${formatDateTime(nextRun(time))}).`;
-
-/** States the user chose deliberately, or that resolve themselves on the next run. */
-const healthy = (health: string) =>
-  health === "ok" || health.startsWith("pending") || health.startsWith("paused");
+  `(next run ${formatDateTime(nextRun(time))})`;
 
 /**
  * Onboarding, shared by `setup` and by `start` when nothing is configured yet:
