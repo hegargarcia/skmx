@@ -72,8 +72,14 @@ bun src/index.ts setup --repo git@github.com:you/skills.git --at 3:30am
 ```
 
 `--at` accepts 24-hour `HH:MM` and 12-hour `3am` / `3:30pm`, and **defaults to
-midnight**. Picking skills always needs a terminal, so `setup` refuses to run
-non-interactively rather than guessing.
+midnight** on a first setup. Leaving it out later keeps the time already scheduled.
+
+**Run `setup` again to change any of it.** It asks the same questions with your
+current answers filled in — the skills you sync are ticked, and the repo you are using
+is selected and hinted `in use` — so it doubles as the edit screen. Picking skills
+needs a terminal, so `setup` refuses to do that non-interactively rather than
+guessing; `setup --at 5am` on an already configured machine asks nothing and works
+from a script.
 
 `stop` is a pause: it unregisters the job but keeps the time on record, so `start`
 puts it back where it was. `start` on an unconfigured machine falls back to

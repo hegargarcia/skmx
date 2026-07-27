@@ -71,17 +71,25 @@ async function pickCopy(prompt: PromptApi, group: SkillGroup) {
   });
 }
 
-/** Asks which repo to sync to, offering to create one. */
-export async function pickRepo(prompt: PromptApi, repos: RepoOption[]): Promise<RepoChoice> {
+/** Asks which repo to sync to, offering to create one. `current` starts selected. */
+export async function pickRepo(
+  prompt: PromptApi,
+  repos: RepoOption[],
+  current?: string,
+): Promise<RepoChoice> {
   const choice = await prompt.select("Which repo should the skills live in?", {
     options: [
       { value: CREATE, label: "Create a new repository…" },
       ...repos.map((repo) => ({
         value: repo.nameWithOwner,
         label: repo.nameWithOwner,
-        hint: repo.visibility.toLowerCase(),
+        hint:
+          repo.nameWithOwner === current
+            ? `${repo.visibility.toLowerCase()}${SEPARATOR}in use`
+            : repo.visibility.toLowerCase(),
       })),
     ],
+    default: current,
   });
   if (choice !== CREATE) return { repo: sshUrl(choice) };
 

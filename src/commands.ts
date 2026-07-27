@@ -5,7 +5,7 @@ import { z } from "zod";
 import { loadConfig, missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
 import { assertGhReady, createRepo, listRepos } from "./github.ts";
 import { pickRepo, pickSkills } from "./onboarding.ts";
-import { discoverSkills, groupSkills, repoDirName, sshUrl } from "./skills.ts";
+import { discoverSkills, githubSlug, groupSkills, repoDirName, sshUrl } from "./skills.ts";
 import {
   formatTimeOfDay,
   installSchedule,
@@ -28,7 +28,7 @@ const formatDateTime = (date: Date) =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
   `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
-const atOption = option(TimeOfDay.prefault("00:00"), {
+const atOption = option(TimeOfDay.optional(), {
   short: "a",
   description: "Time of day to sync — 00:00, 3am, 3:30pm (default midnight)",
 });
@@ -43,14 +43,20 @@ export const setup = defineCommand({
   description: "Pick the skills to sync and the repo to sync them to, then schedule it",
   options: { at: atOption, repo: repoOption },
   async handler({ flags, prompt, terminal }) {
-    const config = await configure(flags.repo, prompt, terminal.isInteractive);
+    const config = await configure(prompt, terminal.isInteractive, {
+      repo: flags.repo,
+      // Running setup again is how the configuration is changed, so always ask.
+      edit: true,
+    });
 
-    await installSchedule(flags.at, config);
+    // Keep the time already scheduled unless a new one was asked for.
+    const time = flags.at ?? (await readSchedule(config)) ?? MIDNIGHT;
+    await installSchedule(time, config);
     prompt.note(
       [
         `${config.skills.map((skill) => skill.name).join(SEPARATOR)}`,
         `${ARROW} ${config.repo} (${config.branch})`,
-        announce("Scheduled", flags.at),
+        announce("Scheduled", time),
       ].join("\n"),
       "skill-sync",
     );
@@ -62,7 +68,8 @@ export const start = defineCommand({
   name: "start",
   description: "Resume the nightly sync after a stop, running setup when unconfigured",
   async handler({ prompt, terminal }) {
-    const config = await configure(undefined, prompt, terminal.isInteractive);
+    // Resuming leaves the configuration as it is; `setup` is where it changes.
+    const config = await configure(prompt, terminal.isInteractive, { edit: false });
     const existing = await readSchedule(config);
     const time = existing ?? MIDNIGHT;
 
@@ -170,24 +177,33 @@ const announce = (verb: string, time: TimeOfDay) =>
   `(next run ${formatDateTime(nextRun(time))})`;
 
 /**
- * Onboarding, shared by `setup` and by `start` when nothing is configured yet:
- * pick the skills, pick or create the repo. Both need a terminal to ask in.
+ * Picks the skills and the repo. `setup` runs this every time, with what is already
+ * configured pre-selected, which is how the configuration gets changed; `start` only
+ * runs it when there is nothing configured yet. Either way it needs a terminal.
  */
-async function configure(repo: string | undefined, prompt: PromptApi, interactive: boolean) {
+async function configure(
+  prompt: PromptApi,
+  interactive: boolean,
+  { repo, edit }: { repo?: string; edit: boolean },
+) {
   const config = await loadConfig();
   const configured = config.repo !== undefined && config.skills.length > 0;
-  if (configured && repo === undefined) return config;
+  if (configured && !edit) return config;
 
   if (!interactive) {
+    // Rescheduling an already configured machine asks nothing, so it still works
+    // without a terminal; changing what is synced does not.
+    if (configured && repo === undefined) return config;
+
     console.error(
-      repo === undefined
-        ? `${missingRepoMessage(config.configPath)}, and pick skills with \`skill-sync setup\` on a terminal`
-        : "picking skills needs a terminal — run `skill-sync setup` interactively",
+      configured
+        ? "changing what is synced needs a terminal — run `skill-sync setup` interactively"
+        : `${missingRepoMessage(config.configPath)}, and pick skills with \`skill-sync setup\` on a terminal`,
     );
     process.exit(1);
   }
 
-  prompt.intro("skill-sync setup");
+  prompt.intro(`skill-sync ${configured ? "setup · editing" : "setup"}`);
   const available = await groupSkills(await discoverSkills());
   if (available.length === 0) {
     console.error("no skills found in ~/.claude/skills, ~/.agents/skills, or ~/.codex/skills");
@@ -195,13 +211,14 @@ async function configure(repo: string | undefined, prompt: PromptApi, interactiv
   }
 
   const skills = await pickSkills(prompt, available, config.skills);
-  return await save(config, { repo: repo ?? (await resolveRepo(prompt)), skills });
+  return await save(config, { repo: repo ?? (await resolveRepo(prompt, config.repo)), skills });
 }
 
 /** Lists the user's repos through `gh` — no OAuth flow of our own — and creates on request. */
-async function resolveRepo(prompt: PromptApi) {
+async function resolveRepo(prompt: PromptApi, current?: string) {
   await assertGhReady();
-  const choice = await pickRepo(prompt, await listRepos());
+  const inUse = current === undefined ? undefined : (githubSlug(current) ?? undefined);
+  const choice = await pickRepo(prompt, await listRepos(), inUse);
 
   return "repo" in choice
     ? choice.repo

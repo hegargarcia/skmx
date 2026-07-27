@@ -122,6 +122,25 @@ test("turns a chosen repo into the ssh url git needs", async () => {
     .toEqual({ repo: "git@github.com:HegarGarcia/skills.git" });
 });
 
+test("starts on the repo already in use, and says which one it is", async () => {
+  const prompt = fakePrompt(["HegarGarcia/skills"]);
+  const repos = [
+    { nameWithOwner: "HegarGarcia/other", visibility: "PUBLIC" },
+    { nameWithOwner: "HegarGarcia/skills", visibility: "PUBLIC" },
+  ];
+
+  await pickRepo(prompt, repos, "HegarGarcia/skills");
+
+  expect(prompt.asked[0]?.options).toMatchObject({
+    default: "HegarGarcia/skills",
+    options: [
+      { label: "Create a new repository…" },
+      { label: "HegarGarcia/other", hint: "public" },
+      { label: "HegarGarcia/skills", hint: "public · in use" },
+    ],
+  });
+});
+
 test("lists creating a repo ahead of the existing ones", async () => {
   const prompt = fakePrompt(["HegarGarcia/skills"]);
 
