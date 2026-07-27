@@ -78,8 +78,8 @@ export async function discoverSkills(home = homedir()) {
     const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
 
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
+      // Holding a SKILL.md is the test, rather than being a directory: a synced skill
+      // is a symlink to the clone, and a symlink is not a directory to readdir.
       const path = join(directory, entry.name);
       if (await Bun.file(join(path, "SKILL.md")).exists()) {
         found.push({ name: entry.name, path, source });

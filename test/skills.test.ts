@@ -57,6 +57,25 @@ test("ignores directories without a SKILL.md and missing agent directories", asy
   expect(await discoverSkills(home)).toEqual([]);
 });
 
+test("finds a skill that is a symlink, which is what a synced one becomes", async () => {
+  const target = await addSkill("elsewhere", "showrunner");
+  const link = join(home, ".claude", "skills", "showrunner");
+  await mkdir(dirname(link), { recursive: true });
+  await symlink(target, link);
+
+  expect(await discoverSkills(home)).toEqual([
+    { name: "showrunner", path: link, source: ".claude/skills" },
+  ]);
+});
+
+test("ignores a link that points nowhere", async () => {
+  const link = join(home, ".claude", "skills", "showrunner");
+  await mkdir(dirname(link), { recursive: true });
+  await symlink(join(home, "gone"), link);
+
+  expect(await discoverSkills(home)).toEqual([]);
+});
+
 test("groups the copies of one skill into a single entry", async () => {
   await addSkill(".claude/skills", "showrunner");
   await addSkill(".agents/skills", "showrunner");
