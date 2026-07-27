@@ -28,15 +28,31 @@ or a git credential helper.
 ## Commands
 
 ```bash
-bun src/index.ts start 03:00   # schedule the nightly sync (also accepts 3am, 3:30pm)
+bun src/index.ts setup         # onboarding: configure the repo and schedule the sync
+bun src/index.ts start         # resume after a stop
+bun src/index.ts stop          # pause, keeping the configuration
 bun src/index.ts status        # schedule, last sync, and whether it is healthy
-bun src/index.ts stop          # remove the schedule
 bun src/index.ts sync          # sync now
 bun src/index.ts --help        # also --version, and --help on any command
 ```
 
-`status` exits non-zero when the sync is scheduled but unhealthy — a failed or
-conflicted last run, or no successful run in the last 26 hours.
+`setup` takes `--at` for the time of day and `--repo` for the remote:
+
+```bash
+bun src/index.ts setup --repo git@github.com:you/skills.git --at 3:30am
+```
+
+`--at` accepts 24-hour `HH:MM` and 12-hour `3am` / `3:30pm`, and **defaults to
+midnight**. `--repo` writes into the config file, and is prompted for when the
+config has no repo yet and there is a terminal to ask in.
+
+`stop` is a pause: it unregisters the job but keeps the time on record, so `start`
+puts it back where it was. `start` on an unconfigured machine falls back to
+onboarding, and with a repo but no schedule it registers one at midnight.
+
+`status` exits non-zero whenever the sync is not going to run as intended — never
+set up, missing from the OS scheduler, a failed or conflicted last run, or no
+successful run in the last 26 hours. A deliberate pause exits zero.
 
 To call it as `skill-sync` from anywhere, run `bun link` in this directory.
 
@@ -83,19 +99,21 @@ holds the last sync record, `schedule.json` the time `start` registered, and
 
 ## Scheduling
 
-`start` registers the job with the OS scheduler through `Bun.cron`, so it survives
-reboots and works on Linux (crontab), macOS (launchd), and Windows (Task
-Scheduler). `stop` unregisters it. The job itself is `src/scheduled.ts`.
+`setup` and `start` register the job with the OS scheduler through `Bun.cron`, so it
+survives reboots and works on Linux (crontab), macOS (launchd), and Windows (Task
+Scheduler). The job itself is `src/scheduled.ts`.
 
-Because there is no API to list registered jobs, `start` records the time in
-`schedule.json` for `status` to report. On Linux `status` also confirms the crontab
-entry is still there and says so when it has gone missing.
+Because there is no API to list registered jobs, the time is recorded in
+`schedule.json`, along with whether it is paused, for `status` to report. On Linux
+`status` also confirms the crontab entry is still there and says so when it has gone
+missing while not paused.
 
 ## Configuration
 
-Settings come from `~/.skill-sync/config.json`, and each one can be overridden by
-an environment variable — useful for trying the tool against a throwaway repo.
-Unknown keys in the file are rejected so typos do not pass silently.
+Settings come from `~/.skill-sync/config.json` — written by `setup`, or by hand —
+and each one can be overridden by an environment variable, which is useful for
+trying the tool against a throwaway repo. Unknown keys in the file are rejected so
+typos do not pass silently.
 
 | Key | Environment variable | Default | Purpose |
 | --- | --- | --- | --- |
