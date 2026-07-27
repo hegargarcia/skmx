@@ -11,6 +11,7 @@ const EnvSchema = z.object({
   SKILL_SYNC_HOME: z.string().trim().min(1).optional(),
   SKILL_SYNC_REPO: z.string().trim().min(1).optional(),
   SKILL_SYNC_BRANCH: z.string().trim().min(1).optional(),
+  XDG_CONFIG_HOME: z.string().trim().min(1).optional(),
   XDG_STATE_HOME: z.string().trim().min(1).optional(),
 });
 
@@ -34,7 +35,10 @@ const FileSchema = z
 /** Environment variables win over `config.json`, which wins over the defaults. */
 export async function loadConfig() {
   const env = EnvSchema.parse(Bun.env);
-  const home = expandHome(env.SKILL_SYNC_HOME ?? join(homedir(), ".skill-sync"));
+  const home = expandHome(
+    env.SKILL_SYNC_HOME ??
+      join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "skill-sync"),
+  );
   const configPath = join(home, "config.json");
   const file = await readConfigFile(configPath);
 
@@ -48,8 +52,11 @@ export async function loadConfig() {
     branch: env.SKILL_SYNC_BRANCH ?? file.branch ?? DEFAULT_BRANCH,
     skills: file.skills ?? [],
     configPath,
+    /** Clones live beside the config, one per repo, and are what the agents link to. */
+    reposDir: join(home, "repos"),
+    /** The home directory holding the agent directories that get linked. */
+    agentHome: homedir(),
     stateDir,
-    clonePath: join(stateDir, "repo"),
     statePath: join(stateDir, "state.json"),
     schedulePath: join(stateDir, "schedule.json"),
     cronLogPath: join(stateDir, "cron.log"),

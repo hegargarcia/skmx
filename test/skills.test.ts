@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, rm, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   agentName,
   discoverSkills,
   githubSlug,
   groupSkills,
-  installedFrom,
+  linkSkills,
+  repoDirName,
   sshUrl,
 } from "../src/skills.ts";
 
@@ -127,27 +128,71 @@ test("builds the ssh url a git remote needs", () => {
   expect(sshUrl("HegarGarcia/skills")).toBe("git@github.com:HegarGarcia/skills.git");
 });
 
-const writeLock = (skills: unknown) =>
-  Bun.write(join(home, ".agents", ".skill-lock.json"), JSON.stringify({ version: 3, skills }));
-
-test("reads which skills skills.sh installed from the repo", async () => {
-  await writeLock({
-    showrunner: { source: "HegarGarcia/skills" },
-    "someone-elses": { source: "vercel-labs/agent-skills" },
-  });
-
-  expect(await installedFrom("HegarGarcia/skills", home)).toEqual(["showrunner"]);
+test.each([
+  ["git@github.com:HegarGarcia/skills.git", "HegarGarcia/skills"],
+  ["/tmp/somewhere/remote.git", "remote"],
+  ["https://gitlab.com/me/my-skills.git", "my-skills"],
+])("clones %p into %p", (repo, expected) => {
+  expect(repoDirName(repo)).toBe(expected);
 });
 
-test("matches the source regardless of case, as skills.sh records it", async () => {
-  await writeLock({ showrunner: { source: "hegargarcia/skills" } });
+/** A clone to link against, holding one skill. */
+async function clone(name: string, body = "# showrunner\n") {
+  const path = join(home, "repos", "owner", "repo");
+  await Bun.write(join(path, "skills", name, "SKILL.md"), body);
+  return path;
+}
 
-  expect(await installedFrom("HegarGarcia/skills", home)).toEqual(["showrunner"]);
+test("links a skill into every agent directory", async () => {
+  const clonePath = await clone("showrunner");
+
+  const { linked, blocked } = await linkSkills(clonePath, ["showrunner"], home);
+
+  expect(blocked).toEqual([]);
+  expect(linked.map((outcome) => outcome.agent)).toEqual(["claude", "agents", "codex"]);
+  for (const agent of [".claude", ".agents", ".codex"]) {
+    const target = join(home, agent, "skills", "showrunner");
+    expect(await readlink(target)).toBe(join(clonePath, "skills", "showrunner"));
+    expect(await Bun.file(join(target, "SKILL.md")).text()).toBe("# showrunner\n");
+  }
 });
 
-test("treats a missing or unreadable lock file as nothing installed", async () => {
-  expect(await installedFrom("HegarGarcia/skills", home)).toEqual([]);
+test("leaves links that already point at the clone alone", async () => {
+  const clonePath = await clone("showrunner");
+  await linkSkills(clonePath, ["showrunner"], home);
 
-  await Bun.write(join(home, ".agents", ".skill-lock.json"), "not json");
-  expect(await installedFrom("HegarGarcia/skills", home)).toEqual([]);
+  expect(await linkSkills(clonePath, ["showrunner"], home)).toEqual({ linked: [], blocked: [] });
+});
+
+test("repoints a link that went somewhere else", async () => {
+  const clonePath = await clone("showrunner");
+  const target = join(home, ".claude", "skills", "showrunner");
+  await mkdir(dirname(target), { recursive: true });
+  await symlink(join(home, "elsewhere"), target);
+
+  await linkSkills(clonePath, ["showrunner"], home);
+
+  expect(await readlink(target)).toBe(join(clonePath, "skills", "showrunner"));
+});
+
+test("replaces a real directory that already holds what the clone holds", async () => {
+  const clonePath = await clone("showrunner");
+  await Bun.write(join(home, ".claude", "skills", "showrunner", "SKILL.md"), "# showrunner\n");
+
+  const { blocked } = await linkSkills(clonePath, ["showrunner"], home);
+
+  expect(blocked).toEqual([]);
+  expect(await readlink(join(home, ".claude", "skills", "showrunner"))).toContain("repos");
+});
+
+test("leaves a real directory whose contents were never pushed", async () => {
+  const clonePath = await clone("showrunner");
+  const target = join(home, ".claude", "skills", "showrunner");
+  await Bun.write(join(target, "SKILL.md"), "# unpushed edits\n");
+
+  const { linked, blocked } = await linkSkills(clonePath, ["showrunner"], home);
+
+  expect(blocked).toEqual([{ skill: "showrunner", agent: "claude", path: target }]);
+  expect(linked.map((outcome) => outcome.agent)).toEqual(["agents", "codex"]);
+  expect(await Bun.file(join(target, "SKILL.md")).text()).toBe("# unpushed edits\n");
 });

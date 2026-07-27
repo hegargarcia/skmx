@@ -1,7 +1,9 @@
 # skill-sync
 
-Pushes your agent skills to a git repo every night, then lets
-[skills.sh](https://skills.sh) install them back across your agents.
+Keeps your agent skills in a git repo and pushes them every night. The repo is cloned
+under `~/.config/skill-sync/repos/`, and every agent directory links to that clone —
+so Claude, Codex and the rest read the same files, and editing a skill through any of
+them edits the repo.
 
 ## Setup
 
@@ -27,8 +29,8 @@ It then lists your repos through the `gh` CLI — including an option to create 
 and asks where the skills should live. There is no OAuth flow of its own; `gh` holds
 the credentials.
 
-Both answers are written to `~/.skill-sync/config.json`, which lives outside the
-checkout so the CLI behaves the same wherever you run it from.
+Both answers are written to `~/.config/skill-sync/config.json`, which lives outside
+the checkout so the CLI behaves the same wherever you run it from.
 
 The repo holds the skills the way
 [HegarGarcia/skills](https://github.com/HegarGarcia/skills) does:
@@ -40,10 +42,11 @@ skills/
     ...             # optional CHANGELOG.md, references/, agents/, etc.
 ```
 
-A brand-new empty repo works and gets populated on the first sync. Pushing runs
-unattended, so the machine needs credentials that work without a prompt — an SSH key
-without a passphrase, or a git credential helper. Prefer a public repo: skills.sh
-installs from one without credentials.
+A brand-new empty repo works and gets populated on the first sync. Both cloning and
+pushing run unattended, so the machine needs credentials that work without a prompt —
+an SSH key without a passphrase, or a git credential helper. A public repo is also
+worth considering if you want [skills.sh](https://skills.sh) to install these skills
+on machines that do not run skill-sync.
 
 ## Commands
 
@@ -92,34 +95,40 @@ bun run build    # bundle the CLI into dist/index.js
 bun run release  # version, tag, and publish (not exercised here)
 ```
 
-`git` work goes through [`simple-git`](https://github.com/steveukx/git-js), repo
-listing and creation through the `gh` CLI, and installation through the `skills`
-CLI. `rsync` is invoked with `Bun.$`.
+`git` work goes through [`simple-git`](https://github.com/steveukx/git-js), and repo
+listing and creation through the `gh` CLI. `rsync` is invoked with `Bun.$`, and the
+links are made with `node:fs`.
 
 ## How a sync works
 
-skill-sync only pushes; **installing is skills.sh's job**. Each selected skill's
-folder is copied into `skills/<name>/` in the repo, committed, and pushed. Then
-`skills update --global --yes` runs for those skills, which is what puts the new
-version into every agent directory they are installed to.
+The repo is cloned to `~/.config/skill-sync/repos/<owner>/<repo>`, and **the clone is
+the source of truth**. Each agent directory gets a symlink per synced skill:
 
-A clone of the repo lives in `~/.local/state/skill-sync/repo` and stays parked on
-the commit of the last successful sync, marked by the `refs/skill-sync/base` ref.
-That commit is the common ancestor, so commits made to the repo from another
-machine are merged rather than overwritten.
+```
+~/.claude/skills/showrunner  ->  ~/.config/skill-sync/repos/you/skills/skills/showrunner
+~/.agents/skills/showrunner  ->  (the same)
+~/.codex/skills/showrunner   ->  (the same)
+```
 
-- **A merge conflict stops the sync.** Local skills are left untouched and `status`
-  reports the conflicting paths. Resolve them in the clone, commit, and sync again.
-- **The first sync has no common ancestor**, so anything the push would overwrite or
-  delete cannot be resolved without losing content. That is reported as `diverged`
-  and nothing is changed — reconcile those files once, then sync again. Files this
-  machine simply adds are not a conflict.
-- **Skills the repo has that you did not select are left alone.** Only the folders
-  of selected skills are touched, and only within them does a local deletion
-  propagate.
-- **Skills that skills.sh has never installed** cannot be refreshed by `update`,
-  which exits zero regardless. The sync names them and tells you to run
-  `bunx skills add <owner/repo>` once to enroll them.
+So a sync is: commit whatever changed in the clone — which is whatever you edited
+through any agent — merge the repo, push, and make sure the links are in place. The
+first sync for a skill is the exception: it has nothing to work from, so the folder
+you picked is copied in to seed it.
+
+The clone stays parked on the commit of the last successful sync, marked by the
+`refs/skill-sync/base` ref. That commit is the common ancestor, so commits made to
+the repo from another machine are merged rather than overwritten.
+
+- **A merge conflict stops the sync.** Nothing is pushed and `status` reports the
+  conflicting paths. Resolve them in the clone, commit, and sync again.
+- **A picked folder that is not a link and still differs from the clone** cannot be
+  resolved automatically — either side may hold the edit worth keeping. That is
+  reported as `diverged` and nothing is changed. This is what you see when a skill
+  already exists in the repo with different contents than your copy.
+- **A directory in the way of a link is only replaced when it already holds exactly
+  what the clone holds.** Otherwise it has content that was never pushed, so it is
+  left alone and named in the summary.
+- **Skills the repo has that you did not select are left alone**, and never linked.
 
 State lives under `${XDG_STATE_HOME:-~/.local/state}/skill-sync`: `state.json`
 holds the last sync record, `schedule.json` the time `start` registered, and
@@ -138,7 +147,7 @@ missing while not paused.
 
 ## Configuration
 
-Settings come from `~/.skill-sync/config.json` — written by `setup`, or by hand —
+Settings come from `~/.config/skill-sync/config.json` — written by `setup`, or by hand —
 and each one can be overridden by an environment variable, which is useful for
 trying the tool against a throwaway repo. Unknown keys in the file are rejected so
 typos do not pass silently.
@@ -159,8 +168,9 @@ typos do not pass silently.
 }
 ```
 
-`SKILL_SYNC_HOME` moves the config directory itself (default `~/.skill-sync`), and
-`XDG_STATE_HOME` moves the state directory. `status` prints both paths.
+`SKILL_SYNC_HOME` moves the config directory itself, which also moves the clones;
+it defaults to `${XDG_CONFIG_HOME:-~/.config}/skill-sync`. `XDG_STATE_HOME` moves the
+state directory. `status` prints the config, clone and state paths.
 
 ## Tests
 

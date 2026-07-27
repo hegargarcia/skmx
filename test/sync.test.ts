@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
@@ -10,7 +10,10 @@ const GIT_ID = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
 
 let root: string;
 let config: Config;
-/** Where this machine keeps its skills, one directory per skill. */
+/**
+ * The agent directory the skills are picked from. It is inside the agent home, as it
+ * is in reality, so a synced skill becomes a link into the clone.
+ */
 let skillsHome: string;
 /** A second clone of the remote, standing in for another machine. */
 let other: string;
@@ -37,16 +40,17 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "skill-sync-test-"));
   const remote = join(root, "remote.git");
   const stateDir = join(root, "state");
-  skillsHome = join(root, "skills");
+  const agentHome = join(root, "agent-home");
+  skillsHome = join(agentHome, ".claude", "skills");
 
   config = {
-    // A local path is not a GitHub remote, so no skills.sh install is triggered.
     repo: remote,
     branch: "main",
     skills: [],
     configPath: join(root, "config.json"),
+    reposDir: join(root, "repos"),
+    agentHome,
     stateDir,
-    clonePath: join(stateDir, "repo"),
     statePath: join(stateDir, "state.json"),
     schedulePath: join(stateDir, "schedule.json"),
     cronLogPath: join(stateDir, "cron.log"),
@@ -168,6 +172,31 @@ test("propagates a file deleted from a skill once a base sync exists", async () 
   expect(await otherFile("alpha", "reference.md").exists()).toBe(false);
 });
 
+test("links the pushed skill into the agent directories", async () => {
+  const record = await runSync(config);
+
+  expect(record.summary).toContain("linked 3 skills");
+  const clone = join(config.reposDir, "remote", "skills", "alpha");
+  for (const agent of [".claude", ".agents", ".codex"]) {
+    const target = join(config.agentHome, agent, "skills", "alpha");
+    expect(await readlink(target)).toBe(clone);
+    expect(await Bun.file(join(target, "SKILL.md")).text()).toBe("alpha v1\n");
+  }
+});
+
+test("keeps syncing once a skill's path resolves into the clone", async () => {
+  await runSync(config);
+  // The agents now read the clone, so edit through one of their links.
+  const linked = join(config.agentHome, ".claude", "skills", "alpha");
+  await Bun.write(join(linked, "SKILL.md"), "edited through the link\n");
+
+  const record = await runSync({ ...config, skills: [{ name: "alpha", path: linked }] });
+
+  expect(record).toMatchObject({ status: "ok" });
+  await $`git -C ${other} pull --ff-only`.quiet();
+  expect(await otherFile("alpha").text()).toBe("edited through the link\n");
+});
+
 test("treats a timestamp-only difference as in sync", async () => {
   const backdated = new Date("2020-01-01T00:00:00Z");
   await utimes(join(skillsHome, "alpha", "SKILL.md"), backdated, backdated);
@@ -185,7 +214,7 @@ test("populates a remote that has never been pushed to", async () => {
   const empty = join(root, "empty.git");
   await $`git init --bare --initial-branch=main ${empty}`.quiet();
 
-  const record = await runSync({ ...config, repo: empty, clonePath: join(root, "empty-clone") });
+  const record = await runSync({ ...config, repo: empty });
 
   expect(record).toMatchObject({ status: "ok" });
   const pushed = await $`git ls-remote ${empty} refs/heads/main`.quiet();

@@ -1,8 +1,6 @@
-import { readdir } from "node:fs/promises";
+import { lstat, mkdir, readdir, readlink, rm, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { $ } from "bun";
-import { z } from "zod";
+import { basename, dirname, join } from "node:path";
 
 /** Where the agents this machine runs keep their skills, relative to the home directory. */
 const AGENT_SKILL_DIRS = [".claude/skills", ".agents/skills", ".codex/skills"];
@@ -105,50 +103,57 @@ export function githubSlug(repo: string) {
 
 export const sshUrl = (slug: string) => `git@github.com:${slug}.git`;
 
-/** skills.sh records what it installed, and from where, in its lock file. */
-const LockSchema = z.object({
-  skills: z.record(z.string(), z.object({ source: z.string().optional() }).loose()).default({}),
-});
+/** Where the clone of `repo` lives under the repos directory. */
+export const repoDirName = (repo: string) =>
+  githubSlug(repo) ?? (basename(repo).replace(/\.git$/, "") || "repo");
 
-/** The skills already installed from `slug`, which are the ones `update` can refresh. */
-export async function installedFrom(slug: string, home = homedir()) {
-  const lock = Bun.file(join(home, ".agents", ".skill-lock.json"));
-  if (!(await lock.exists())) return [];
-
-  const parsed = LockSchema.safeParse(await lock.json().catch(() => null));
-  if (!parsed.success) return [];
-
-  return Object.entries(parsed.data.skills)
-    .filter(([, entry]) => entry.source?.toLowerCase() === slug.toLowerCase())
-    .map(([name]) => name);
-}
+export type LinkOutcome = { skill: string; agent: string; path: string };
 
 /**
- * Hands installation to skills.sh, which is what puts the pushed skills into every
- * agent directory. `update` refreshes what is already installed rather than
- * enrolling new agents, so it will not sprawl directories across the home folder.
+ * Points every agent directory at the clone, so all of them read the same files and
+ * an edit through any one of them is an edit to the repo.
  *
- * It exits zero for skills it has never installed, so anything missing from the lock
- * is reported instead: those need one `skills add` to enroll.
+ * A directory that is not a link is only replaced when it already holds exactly what
+ * the clone holds — otherwise it has content that was never pushed, and replacing it
+ * would throw that away, so it is reported instead.
  */
-export async function triggerInstall(slug: string, names: string[]) {
-  const installed = await installedFrom(slug);
-  const missing = names.filter((name) => !installed.includes(name));
-  const refreshable = names.filter((name) => installed.includes(name));
+export async function linkSkills(clonePath: string, names: string[], home = homedir()) {
+  const linked: LinkOutcome[] = [];
+  const blocked: LinkOutcome[] = [];
 
-  if (refreshable.length > 0) {
-    const result = await $`${process.execPath} x skills update ${refreshable} --global --yes`
-      .nothrow()
-      .quiet();
+  for (const source of AGENT_SKILL_DIRS) {
+    for (const name of names) {
+      const target = join(home, source, name);
+      const from = join(clonePath, "skills", name);
+      const outcome = { skill: name, agent: agentName(source), path: target };
 
-    if (result.exitCode !== 0) {
-      const output = `${result.stderr.toString()}${result.stdout.toString()}`.trim();
-      return {
-        ok: false,
-        reason: output.split("\n").at(-1) ?? `exit code ${result.exitCode}`,
-      } as const;
+      if (await alreadyLinked(target, from)) continue;
+      if (!(await replaceable(target, from))) {
+        blocked.push(outcome);
+        continue;
+      }
+
+      await mkdir(dirname(target), { recursive: true });
+      await rm(target, { recursive: true, force: true });
+      await symlink(from, target);
+      linked.push(outcome);
     }
   }
 
-  return { ok: true, refreshed: refreshable, missing } as const;
+  return { linked, blocked };
+}
+
+const alreadyLinked = (target: string, from: string) =>
+  readlink(target)
+    .then((destination) => destination === from)
+    .catch(() => false);
+
+/** True when nothing of value sits at `target`, or it is already a link, or a copy. */
+async function replaceable(target: string, from: string) {
+  const existing = await lstat(target).catch(() => null);
+  if (existing === null) return true;
+  if (existing.isSymbolicLink()) return true;
+  if (!existing.isDirectory()) return false;
+
+  return (await fingerprint(target)) === (await fingerprint(from));
 }

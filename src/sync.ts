@@ -1,4 +1,4 @@
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, realpath, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { $ } from "bun";
 import {
@@ -10,7 +10,7 @@ import {
   type SimpleGit,
 } from "simple-git";
 import { missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
-import { githubSlug, triggerInstall } from "./skills.ts";
+import { fingerprint, linkSkills, repoDirName } from "./skills.ts";
 import { writeLastSync, type SyncRecord } from "./state.ts";
 
 const DIVERGENT_PATHS_LISTED = 4;
@@ -52,8 +52,9 @@ export async function runSync(config: Config) {
 }
 
 async function performSync(config: Config) {
-  const { repo, branch, clonePath, skills } = config;
+  const { repo, branch, skills } = config;
   if (!repo) throw new Error(missingRepoMessage(config.configPath));
+  const clonePath = join(config.reposDir, repoDirName(repo));
   if (skills.length === 0) {
     throw new Error(`no skills selected to sync — run \`skill-sync setup\``);
   }
@@ -76,28 +77,24 @@ async function performSync(config: Config) {
 
   const skillsInRepo = join(clonePath, "skills");
   await mkdir(skillsInRepo, { recursive: true });
-  const firstRun = !(await refExists(git, BASE_REF));
-  if (firstRun) {
+  if (!(await refExists(git, BASE_REF))) {
     // Nothing has been synced yet, so anything sitting in the clone is leftover from
     // an abandoned run — the remote as it stands is the only trustworthy comparison.
     if (published) await git.reset(ResetMode.HARD, [remoteBranch]);
     await git.clean(CleanOptions.FORCE + CleanOptions.RECURSIVE);
-
-    // Without a base there is no common ancestor to merge against, so anything the
-    // push would overwrite or delete cannot be resolved without losing content.
-    const divergent = (
-      await Promise.all(
-        skills.map((skill) => unreconciled(skill, join(skillsInRepo, skill.name))),
-      )
-    ).flat();
-    if (divergent.length > 0) return diverged(divergent, clonePath);
   }
 
-  for (const skill of skills) {
-    const destination = join(skillsInRepo, skill.name);
-    await mkdir(destination, { recursive: true });
-    // --delete drops files removed from the skill, and stays inside that skill's folder.
-    await $`rsync ${MIRROR} --delete ${`${skill.path}/`} ${`${destination}/`}`.quiet();
+  // Decide everything before copying anything, so one unreconciled skill cannot
+  // leave the others half imported.
+  const plans = await Promise.all(
+    skills.map((skill) => planFor(skill, join(skillsInRepo, skill.name))),
+  );
+  const divergent = plans.flatMap((plan) => plan.unreconciled);
+  if (divergent.length > 0) return diverged(divergent, clonePath);
+
+  for (const plan of plans.filter((plan) => plan.bootstrap)) {
+    await mkdir(plan.destination, { recursive: true });
+    await $`rsync ${MIRROR} --delete ${`${plan.skill.path}/`} ${`${plan.destination}/`}`.quiet();
   }
 
   const committed = await commitLocalEdits(git);
@@ -127,22 +124,16 @@ async function performSync(config: Config) {
     outgoing > 0 && `pushed ${plural(outgoing, "commit")}`,
   ].filter((change): change is string => change !== false);
 
-  // Installing is skills.sh's job; a push nobody installed has not reached the agents.
-  const installed = changes.length > 0 ? await install(repo, skills) : null;
-  if (installed?.ok === false) {
-    return {
-      status: "error",
-      summary: `${changes.join(", ")}, but the skills.sh update failed: ${installed.reason}`,
-      commit: head,
-    } as const;
-  }
-
-  if (installed?.refreshed.length) changes.push("triggered the skills.sh update");
-  if (installed?.missing.length) {
-    changes.push(
-      `${installed.missing.join(", ")} not installed yet — run ` +
-        `\`bunx skills add ${githubSlug(repo)}\` once`,
-    );
+  // Every agent reads the clone, so linking is what actually installs the skills.
+  const { linked, blocked } = await linkSkills(
+    clonePath,
+    skills.map((skill) => skill.name),
+    config.agentHome,
+  );
+  if (linked.length > 0) changes.push(`linked ${plural(linked.length, "skill")} for the agents`);
+  if (blocked.length > 0) {
+    const paths = blocked.map((outcome) => outcome.path).join(", ");
+    changes.push(`left alone, holding content that was never pushed: ${paths}`);
   }
 
   return {
@@ -152,18 +143,13 @@ async function performSync(config: Config) {
   } as const;
 }
 
-/**
- * Skips the trigger for remotes skills.sh cannot install from, which keeps local
- * paths usable as repos.
- */
-async function install(repo: string, skills: readonly SyncedSkill[]) {
-  const slug = githubSlug(repo);
-  if (slug === null) return null;
-
-  return await triggerInstall(
-    slug,
-    skills.map((skill) => skill.name),
-  );
+/** Two paths that lead to the same directory, once links are resolved. */
+async function sameDirectory(one: string, other: string) {
+  const [first, second] = await Promise.all([
+    realpath(one).catch(() => one),
+    realpath(other).catch(() => other),
+  ]);
+  return first === second;
 }
 
 /** A failed git command carries its reason on stderr; the message is only an exit code. */
@@ -226,11 +212,29 @@ const contentChanges = (itemized: string) =>
     .filter((line) => line !== "" && !line.startsWith("."));
 
 /**
+ * How a skill gets into the clone. The clone is the source of truth once the skill is
+ * in it — every agent reads it through a link, so edits land there directly. The
+ * configured path only says where to import from the first time.
+ *
+ * A separate directory that still differs from the clone is the one case that cannot
+ * be decided here: either side may hold the edit worth keeping, so it is reported.
+ */
+async function planFor(skill: SyncedSkill, destination: string) {
+  const plan = { skill, destination, bootstrap: false, unreconciled: [] as string[] };
+
+  if (await sameDirectory(skill.path, destination)) return plan;
+  if (!(await isDirectory(destination))) return { ...plan, bootstrap: true };
+  if ((await fingerprint(skill.path)) === (await fingerprint(destination))) return plan;
+
+  return { ...plan, unreconciled: await differences(skill, destination) };
+}
+
+/**
  * What pushing this skill would overwrite or delete in the repo: files that exist on
  * both sides with different contents, and files the repo has that this machine does
  * not. New local files are not listed — adding those loses nothing.
  */
-async function unreconciled(skill: SyncedSkill, destination: string) {
+async function differences(skill: SyncedSkill, destination: string) {
   const from = `${skill.path}/`;
   const to = `${destination}/`;
   const [differing, deleting] = await Promise.all([
@@ -259,8 +263,8 @@ function diverged(paths: string[], clonePath: string) {
     status: "diverged",
     summary:
       `${listed}${rest > 0 ? ` and ${plural(rest, "other file")}` : ""} differ between this ` +
-      `machine and the remote, and there is no previous sync to merge from — reconcile them ` +
-      `once (the remote is checked out at ${clonePath}), then sync again`,
+      `machine and the repo, and either side may hold the edit worth keeping — reconcile ` +
+      `them once (the repo is checked out at ${clonePath}), then sync again`,
     commit: null,
   } as const;
 }

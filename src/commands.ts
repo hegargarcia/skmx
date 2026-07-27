@@ -1,11 +1,11 @@
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { defineCommand, option, type PromptApi } from "@bunli/core";
 import { z } from "zod";
 import { loadConfig, missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
 import { assertGhReady, createRepo, listRepos } from "./github.ts";
 import { pickRepo, pickSkills } from "./onboarding.ts";
-import { discoverSkills, groupSkills, sshUrl } from "./skills.ts";
+import { discoverSkills, groupSkills, repoDirName, sshUrl } from "./skills.ts";
 import {
   formatTimeOfDay,
   installSchedule,
@@ -127,6 +127,10 @@ export const status = defineCommand({
         config.skills.length > 0
           ? config.skills.map((skill) => skill.name).join(", ")
           : "none selected",
+      ],
+      [
+        "clone",
+        config.repo ? join(config.reposDir, repoDirName(config.repo)) : config.reposDir,
       ],
       ["config", config.configPath],
       ["state", config.stateDir],
