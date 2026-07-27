@@ -1,0 +1,28 @@
+{
+  "name": "skill-sync",
+  "version": "0.1.0",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "skill-sync": "src/index.ts"
+  },
+  "scripts": {
+    "dev": "bunli dev",
+    "build": "bunli build",
+    "test": "bunli test",
+    "release": "bunli release"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "bunli": "^0.9.1"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@bunli/core": "^0.9.1",
+    "simple-git": "^3.36.0",
+    "zod": "^4.4.3"
+  }
+}
