@@ -5,7 +5,7 @@ import { z } from "zod";
 import { loadConfig, missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
 import { assertGhReady, createRepo, listRepos } from "./github.ts";
 import { pickRepo, pickSkills } from "./onboarding.ts";
-import { discoverSkills, sshUrl } from "./skills.ts";
+import { discoverSkills, groupSkills, sshUrl } from "./skills.ts";
 import {
   formatTimeOfDay,
   installSchedule,
@@ -177,7 +177,7 @@ async function configure(repo: string | undefined, prompt: PromptApi, interactiv
   }
 
   prompt.intro("skill-sync setup");
-  const available = await discoverSkills();
+  const available = await groupSkills(await discoverSkills());
   if (available.length === 0) {
     console.error("no skills found in ~/.claude/skills, ~/.agents/skills, or ~/.codex/skills");
     process.exit(1);

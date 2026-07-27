@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { PromptApi } from "@bunli/core";
 import { pickRepo, pickSkills } from "../src/onboarding.ts";
-import type { DiscoveredSkill } from "../src/skills.ts";
+import type { SkillGroup } from "../src/skills.ts";
 
 type Asked = { message: string; options?: unknown };
 
@@ -25,47 +25,68 @@ function fakePrompt(answers: unknown[]) {
   return prompt;
 }
 
-const available: DiscoveredSkill[] = [
-  { name: "showrunner", path: "/home/me/.claude/skills/showrunner", source: ".claude/skills" },
-  { name: "showrunner", path: "/home/me/.agents/skills/showrunner", source: ".agents/skills" },
-  { name: "release-notes", path: "/home/me/.codex/skills/release-notes", source: ".codex/skills" },
-];
-
-test("returns the name and path of each selected skill", async () => {
-  const prompt = fakePrompt([
-    ["/home/me/.claude/skills/showrunner", "/home/me/.codex/skills/release-notes"],
-  ]);
-
-  expect(await pickSkills(prompt, available, [])).toEqual([
-    { name: "showrunner", path: "/home/me/.claude/skills/showrunner" },
-    { name: "release-notes", path: "/home/me/.codex/skills/release-notes" },
-  ]);
+const copy = (agent: string, name: string) => ({
+  name,
+  path: `/home/me/.${agent}/skills/${name}`,
+  source: `.${agent}/skills`,
 });
 
-test("offers each copy of a skill separately, hinted with its agent directory", async () => {
+/** showrunner is kept in two places with the same contents; notes differs. */
+const groups: SkillGroup[] = [
+  {
+    name: "showrunner",
+    copies: [copy("claude", "showrunner"), copy("agents", "showrunner")],
+    identical: true,
+  },
+  {
+    name: "notes",
+    copies: [copy("claude", "notes"), copy("agents", "notes")],
+    identical: false,
+  },
+];
+
+test("lists each skill once, hinting which agents hold it", async () => {
   const prompt = fakePrompt([[]]);
 
-  await pickSkills(prompt, available, []);
+  await pickSkills(prompt, groups, []);
 
   expect(prompt.asked[0]?.options).toMatchObject({
     options: [
-      { label: "showrunner", hint: ".claude/skills" },
-      { label: "showrunner", hint: ".agents/skills" },
-      { label: "release-notes", hint: ".codex/skills" },
+      { label: "showrunner", hint: "claude, agents" },
+      { label: "notes", hint: "claude, agents — contents differ" },
     ],
     min: 1,
   });
 });
 
+test("does not ask which copy to push when they hold the same files", async () => {
+  const prompt = fakePrompt([["showrunner"]]);
+
+  expect(await pickSkills(prompt, groups, [])).toEqual([
+    { name: "showrunner", path: "/home/me/.claude/skills/showrunner" },
+  ]);
+  expect(prompt.asked).toHaveLength(1);
+});
+
+test("asks which copy to push when they differ", async () => {
+  const prompt = fakePrompt([["notes"], "/home/me/.agents/skills/notes"]);
+
+  expect(await pickSkills(prompt, groups, [])).toEqual([
+    { name: "notes", path: "/home/me/.agents/skills/notes" },
+  ]);
+  expect(prompt.asked[1]).toMatchObject({
+    message: "Which copy of notes should be pushed?",
+    options: { options: [{ label: "claude" }, { label: "agents" }] },
+  });
+});
+
 test("pre-selects the skills already being synced", async () => {
   const prompt = fakePrompt([[]]);
-  const current = [{ name: "release-notes", path: "/home/me/.codex/skills/release-notes" }];
+  const current = [{ name: "showrunner", path: "/home/me/.claude/skills/showrunner" }];
 
-  await pickSkills(prompt, available, current);
+  await pickSkills(prompt, groups, current);
 
-  expect(prompt.asked[0]?.options).toMatchObject({
-    initialValues: ["/home/me/.codex/skills/release-notes"],
-  });
+  expect(prompt.asked[0]?.options).toMatchObject({ initialValues: ["showrunner"] });
 });
 
 test("turns a chosen repo into the ssh url git needs", async () => {

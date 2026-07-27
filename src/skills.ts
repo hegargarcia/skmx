@@ -14,6 +14,63 @@ export type DiscoveredSkill = {
   source: string;
 };
 
+/** One skill, and every copy of it this machine holds. */
+export type SkillGroup = {
+  name: string;
+  copies: DiscoveredSkill[];
+  /** Whether every copy holds the same files, byte for byte. */
+  identical: boolean;
+};
+
+/** The agent a skill directory belongs to: `.claude/skills` reads as `claude`. */
+export const agentName = (source: string) => source.split("/")[0]?.replace(/^\./, "") ?? source;
+
+/**
+ * A checksum of a skill folder's contents — every file path and its bytes — so copies
+ * of one skill can be compared without caring about timestamps.
+ */
+export async function fingerprint(path: string) {
+  const entries = await readdir(path, { recursive: true, withFileTypes: true }).catch(() => []);
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name))
+    .sort();
+
+  const hasher = new Bun.CryptoHasher("sha256");
+  for (const file of files) {
+    hasher.update(file.slice(path.length));
+    hasher.update(await Bun.file(file).arrayBuffer());
+  }
+
+  return hasher.digest("hex");
+}
+
+/**
+ * Collapses the copies of each skill into one entry, so a skill kept in both
+ * `.claude` and `.agents` is offered once rather than twice.
+ */
+export async function groupSkills(discovered: DiscoveredSkill[]) {
+  const fingerprints = new Map(
+    await Promise.all(
+      discovered.map(async (skill) => [skill.path, await fingerprint(skill.path)] as const),
+    ),
+  );
+
+  const groups = new Map<string, SkillGroup>();
+  for (const skill of discovered) {
+    const group = groups.get(skill.name);
+    if (group === undefined) {
+      groups.set(skill.name, { name: skill.name, copies: [skill], identical: true });
+      continue;
+    }
+
+    group.copies.push(skill);
+    group.identical &&= fingerprints.get(skill.path) === fingerprints.get(group.copies[0]!.path);
+  }
+
+  return [...groups.values()];
+}
+
 /** Every directory holding a SKILL.md across the agent directories. */
 export async function discoverSkills(home = homedir()) {
   const found: DiscoveredSkill[] = [];

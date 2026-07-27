@@ -1,6 +1,6 @@
 import type { PromptApi } from "@bunli/core";
 import type { SyncedSkill } from "./config.ts";
-import { sshUrl, type DiscoveredSkill } from "./skills.ts";
+import { agentName, sshUrl, type SkillGroup } from "./skills.ts";
 
 /** Sentinel for "none of the listed repos"; no repo name can collide with it. */
 const CREATE = "\0create";
@@ -12,28 +12,49 @@ export type RepoChoice =
 export type RepoOption = { nameWithOwner: string; visibility: string };
 
 /**
- * Asks which of the discovered skills to sync. The same skill can appear in more
- * than one agent directory with different contents, so each copy is offered
- * separately, hinted with where it lives.
+ * Asks which skills to sync, listing each one once with the agents that hold it.
+ * Copies that hold the same files need no further question; when they differ, only
+ * one can be the source, so that gets asked per skill.
  */
 export async function pickSkills(
   prompt: PromptApi,
-  available: DiscoveredSkill[],
+  groups: SkillGroup[],
   current: SyncedSkill[],
 ) {
   const selected = await prompt.multiselect("Which skills should be synced?", {
-    options: available.map((skill) => ({
-      value: skill.path,
-      label: skill.name,
-      hint: skill.source,
+    options: groups.map((group) => ({
+      value: group.name,
+      label: group.name,
+      hint: describeCopies(group),
     })),
-    initialValues: current.map((skill) => skill.path),
+    initialValues: current.map((skill) => skill.name),
     min: 1,
   });
 
-  return available
-    .filter((skill) => selected.includes(skill.path))
-    .map(({ name, path }): SyncedSkill => ({ name, path }));
+  const chosen: SyncedSkill[] = [];
+  for (const group of groups.filter((group) => selected.includes(group.name))) {
+    chosen.push({ name: group.name, path: await pickCopy(prompt, group) });
+  }
+
+  return chosen;
+}
+
+const describeCopies = ({ copies, identical }: SkillGroup) => {
+  const agents = copies.map((copy) => agentName(copy.source)).join(", ");
+  return identical ? agents : `${agents} — contents differ`;
+};
+
+async function pickCopy(prompt: PromptApi, group: SkillGroup) {
+  const [first, ...rest] = group.copies;
+  if (rest.length === 0 || group.identical) return first!.path;
+
+  return await prompt.select(`Which copy of ${group.name} should be pushed?`, {
+    options: group.copies.map((copy) => ({
+      value: copy.path,
+      label: agentName(copy.source),
+      hint: copy.path,
+    })),
+  });
 }
 
 /** Asks which repo to sync to, offering to create one. */

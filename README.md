@@ -11,10 +11,21 @@ bun src/index.ts setup
 ```
 
 `setup` is interactive. It finds every skill with a `SKILL.md` under
-`~/.claude/skills`, `~/.agents/skills`, and `~/.codex/skills`, asks which to sync,
-then lists your repos through the `gh` CLI — including an option to create one — and
-asks where they should live. There is no OAuth flow of its own; `gh` holds the
-credentials.
+`~/.claude/skills`, `~/.agents/skills`, and `~/.codex/skills` and asks which to sync,
+listing each skill **once** with the agents that hold it:
+
+```
+◻ personal-code-style   claude, agents — contents differ
+◻ showrunner            claude, agents
+```
+
+Copies are compared by content, not by path, so a skill kept in two places appears
+as one choice. When the copies do differ only one can be the source, so `setup` asks
+which of them to push.
+
+It then lists your repos through the `gh` CLI — including an option to create one —
+and asks where the skills should live. There is no OAuth flow of its own; `gh` holds
+the credentials.
 
 Both answers are written to `~/.skill-sync/config.json`, which lives outside the
 checkout so the CLI behaves the same wherever you run it from.

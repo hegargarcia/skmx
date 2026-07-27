@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverSkills, githubSlug, installedFrom, sshUrl } from "../src/skills.ts";
+import {
+  agentName,
+  discoverSkills,
+  githubSlug,
+  groupSkills,
+  installedFrom,
+  sshUrl,
+} from "../src/skills.ts";
 
 let home: string;
 
@@ -47,6 +54,57 @@ test("ignores directories without a SKILL.md and missing agent directories", asy
   await addSkill(".claude/skills", "not-a-skill", false);
 
   expect(await discoverSkills(home)).toEqual([]);
+});
+
+test("groups the copies of one skill into a single entry", async () => {
+  await addSkill(".claude/skills", "showrunner");
+  await addSkill(".agents/skills", "showrunner");
+  await addSkill(".codex/skills", "release-notes");
+
+  const grouped = await groupSkills(await discoverSkills(home));
+
+  expect(grouped.map((group) => group.name)).toEqual(["showrunner", "release-notes"]);
+  expect(grouped[0]?.copies).toHaveLength(2);
+  expect(grouped[0]?.identical).toBe(true);
+});
+
+test("marks a skill whose copies hold different contents", async () => {
+  await addSkill(".claude/skills", "showrunner");
+  const other = await addSkill(".agents/skills", "showrunner");
+  await Bun.write(join(other, "SKILL.md"), "# showrunner, edited\n");
+
+  const [group] = await groupSkills(await discoverSkills(home));
+
+  expect(group?.identical).toBe(false);
+});
+
+test("counts an extra file as a difference between copies", async () => {
+  await addSkill(".claude/skills", "showrunner");
+  const other = await addSkill(".agents/skills", "showrunner");
+  await Bun.write(join(other, "reference.md"), "notes\n");
+
+  const [group] = await groupSkills(await discoverSkills(home));
+
+  expect(group?.identical).toBe(false);
+});
+
+test("ignores timestamps when comparing copies", async () => {
+  const claude = await addSkill(".claude/skills", "showrunner");
+  await addSkill(".agents/skills", "showrunner");
+  const backdated = new Date("2020-01-01T00:00:00Z");
+  await utimes(join(claude, "SKILL.md"), backdated, backdated);
+
+  const [group] = await groupSkills(await discoverSkills(home));
+
+  expect(group?.identical).toBe(true);
+});
+
+test.each([
+  [".claude/skills", "claude"],
+  [".agents/skills", "agents"],
+  [".codex/skills", "codex"],
+])("names the agent behind %p", (source, expected) => {
+  expect(agentName(source)).toBe(expected);
 });
 
 test.each([
