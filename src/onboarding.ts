@@ -1,6 +1,7 @@
 import type { PromptApi } from "@bunli/core";
 import type { SyncedSkill } from "./config.ts";
 import {
+  ALL_DAYS,
   dayName,
   EVERY_DAY_AT_MIDNIGHT,
   formatTimeOfDay,
@@ -78,36 +79,29 @@ async function pickCopy(prompt: PromptApi, group: SkillGroup) {
   });
 }
 
-const EVERY_DAY = "*";
+/** Offered as one keystroke each; any other time can be typed instead. */
+const SUGGESTED_TIMES = ["09:00", "00:00", "21:00"] as const;
 
 /**
- * Asks when to sync: the day first, then the time. Defaults to every day at midnight,
- * or to whatever is already scheduled.
+ * Asks when to sync: which days first, then the time. Defaults to every day at
+ * midnight, or to whatever is already scheduled.
  */
 export async function pickSchedule(prompt: PromptApi, current = EVERY_DAY_AT_MIDNIGHT) {
-  const day = await prompt.select("Which day should the skills sync?", {
-    options: [
-      { value: EVERY_DAY, label: dayName(null), hint: "nightly" },
-      ...[1, 2, 3, 4, 5, 6, 0].map((number) => ({
-        value: String(number),
-        label: dayName(number),
-      })),
-    ],
-    default: current.day === null ? EVERY_DAY : String(current.day),
+  const days = await prompt.multiselect("Which days should the skills sync?", {
+    options: ALL_DAYS.map((day) => ({ value: String(day), label: dayName(day) })),
+    initialValues: current.days.map(String),
+    min: 1,
   });
 
-  const answer = await prompt("What time?", {
+  const answer = await prompt(`What time? ${SUGGESTED_TIMES.join(SEPARATOR)}`, {
     default: formatTimeOfDay(current),
-    placeholder: "00:00",
+    placeholder: SUGGESTED_TIMES[0],
     validate: (value) =>
       TimeOfDay.safeParse(value).success ||
       "use 24-hour HH:MM (03:00) or 12-hour (3am, 3:30pm)",
   });
 
-  return {
-    ...TimeOfDay.parse(answer),
-    day: day === EVERY_DAY ? null : Number(day),
-  } satisfies Schedule;
+  return { ...TimeOfDay.parse(answer), days: days.map(Number) } satisfies Schedule;
 }
 
 /** Asks which repo to sync to, offering to create one. `current` starts selected. */

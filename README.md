@@ -35,19 +35,25 @@ It then lists your repos through the `gh` CLI — including an option to create 
 and asks where the skills should live. There is no OAuth flow of its own; `gh` holds
 the credentials.
 
-Last it asks when to sync: the day first, then the time.
+Last it asks when to sync: the days first, then the time.
 
 ```
-? Which day should the skills sync?
-> Every day (nightly)
-  Mondays
+? Which days should the skills sync?
+> [x] Mondays
+  [x] Tuesdays
   …
 
-? What time? 00:00
+? What time? 09:00 · 00:00 · 21:00
+  00:00
 ```
 
-The defaults are **every day at 00:00**. The time accepts 24-hour `HH:MM` and
-12-hour `3am` / `3:30pm`, and is checked before it is accepted.
+Days are checkboxes, so a schedule can name any set of them — every day, weekdays,
+or just Sundays. The time is typed, with three common ones offered; it accepts
+24-hour `HH:MM` and 12-hour `3am` / `3:30pm`, and is checked before it is accepted.
+The defaults are **every day at 00:00**.
+
+Several days become one cron entry: Mondays, Wednesdays and Fridays at 09:00 is
+`0 9 * * 1,3,5`, and `status` reads it back as `Mon · Wed · Fri at 09:00`.
 
 Both answers are written to `~/.config/skill-sync/config.json`, which lives outside
 the checkout so the CLI behaves the same wherever you run it from.
@@ -87,7 +93,7 @@ bun src/index.ts setup --repo git@github.com:you/skills.git
 
 **Run `setup` again to change any of it.** It asks the same questions with your
 current answers filled in — the skills you sync are ticked, the repo you are using is
-selected and hinted `in use`, and the day and time start on what is already
+selected and hinted `in use`, and the days and time start on what is already
 scheduled — so it doubles as the edit screen.
 
 Every question needs a terminal, so `setup` refuses to run non-interactively rather

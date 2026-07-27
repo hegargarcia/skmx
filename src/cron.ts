@@ -32,21 +32,8 @@ export const TimeOfDay = z.string().trim().transform((raw, ctx) => {
 
 export type TimeOfDay = z.output<typeof TimeOfDay>;
 
-/**
- * When the sync runs. `day` follows cron's day-of-week numbering, 0 being Sunday, and
- * is null for every day. `paused` keeps the schedule on record after `stop`, so
- * `start` can resume it.
- */
-const ScheduleSchema = z.object({
-  hour: z.number().int().min(0).max(23),
-  minute: z.number().int().min(0).max(59),
-  day: z.number().int().min(0).max(6).nullable().default(null),
-  paused: z.boolean().default(false),
-});
-
-export type Schedule = { hour: number; minute: number; day: number | null };
-
-export const EVERY_DAY_AT_MIDNIGHT: Schedule = { hour: 0, minute: 0, day: null };
+/** Cron's day-of-week numbering, 0 being Sunday, ordered as a week is read. */
+export const ALL_DAYS = [1, 2, 3, 4, 5, 6, 0] as const;
 
 const DAY_NAMES = [
   "Sundays",
@@ -58,16 +45,54 @@ const DAY_NAMES = [
   "Saturdays",
 ] as const;
 
-export const dayName = (day: number | null) => (day === null ? "Every day" : DAY_NAMES[day]!);
+export const dayName = (day: number) => DAY_NAMES[day]!;
+
+/**
+ * When the sync runs. `paused` keeps the schedule on record after `stop`, so `start`
+ * can resume it. `day` is how a single day used to be recorded, before a schedule
+ * could name several.
+ */
+const ScheduleSchema = z
+  .object({
+    hour: z.number().int().min(0).max(23),
+    minute: z.number().int().min(0).max(59),
+    days: z.array(z.number().int().min(0).max(6)).min(1).optional(),
+    day: z.number().int().min(0).max(6).nullable().optional(),
+    paused: z.boolean().default(false),
+  })
+  .transform(({ day, days, ...rest }) => ({
+    ...rest,
+    days: days ?? (day === undefined || day === null ? [...ALL_DAYS] : [day]),
+  }));
+
+export type Schedule = { hour: number; minute: number; days: number[] };
+
+export const EVERY_DAY_AT_MIDNIGHT: Schedule = { hour: 0, minute: 0, days: [...ALL_DAYS] };
+
+/** Monday first, as the week is read, rather than cron's Sunday-first numbering. */
+const asRead = (days: number[]) => [...days].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
+
+export const formatDays = (days: number[]) => {
+  if (days.length >= ALL_DAYS.length) return "Every day";
+  if (days.length === 1) return dayName(days[0]!);
+
+  return asRead(days)
+    .map((day) => dayName(day).slice(0, 3))
+    .join(" · ");
+};
 
 export const formatSchedule = (schedule: Schedule) =>
-  `${dayName(schedule.day)} at ${formatTimeOfDay(schedule)}`;
+  `${formatDays(schedule.days)} at ${formatTimeOfDay(schedule)}`;
 
 export const formatTimeOfDay = ({ hour, minute }: TimeOfDay) =>
   `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 
-export const cronExpression = ({ hour, minute, day }: Schedule) =>
-  `${minute} ${hour} * * ${day ?? "*"}`;
+export const cronExpression = ({ hour, minute, days }: Schedule) =>
+  `${minute} ${hour} * * ${
+    days.length >= ALL_DAYS.length
+      ? "*"
+      : [...days].sort((a, b) => a - b).join(",")
+  }`;
 
 export async function installSchedule(schedule: Schedule, config: Config) {
   await Bun.cron(JOB_MODULE, cronExpression(schedule), TITLE);
@@ -86,9 +111,9 @@ export async function pauseSchedule(config: Config) {
 
 const writeSchedule = (
   { schedulePath }: Config,
-  { hour, minute, day }: Schedule,
+  { hour, minute, days }: Schedule,
   paused: boolean,
-) => Bun.write(schedulePath, `${JSON.stringify({ hour, minute, day, paused })}\n`);
+) => Bun.write(schedulePath, `${JSON.stringify({ hour, minute, days, paused })}\n`);
 
 /** The time of day the sync was registered for, or null when it is not scheduled. */
 export async function readSchedule(config: Config) {
@@ -116,15 +141,13 @@ export async function isRegistered() {
  * UTC while the OS scheduler fires in local time, so this stays hand-rolled.
  */
 export function nextRun(schedule: Schedule, now = new Date()) {
-  const next = new Date(now);
-  next.setHours(schedule.hour, schedule.minute, 0, 0);
+  const candidates = schedule.days.map((day) => {
+    const next = new Date(now);
+    next.setHours(schedule.hour, schedule.minute, 0, 0);
+    next.setDate(next.getDate() + ((day - next.getDay() + 7) % 7));
+    if (next <= now) next.setDate(next.getDate() + 7);
+    return next.getTime();
+  });
 
-  if (schedule.day === null) {
-    if (next <= now) next.setDate(next.getDate() + 1);
-    return next;
-  }
-
-  next.setDate(next.getDate() + ((schedule.day - next.getDay() + 7) % 7));
-  if (next <= now) next.setDate(next.getDate() + 7);
-  return next;
+  return new Date(Math.min(...candidates));
 }

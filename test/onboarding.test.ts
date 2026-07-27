@@ -115,58 +115,61 @@ test("pre-selects the skills already being synced", async () => {
   expect(prompt.asked[0]?.options).toMatchObject({ initialValues: ["showrunner"] });
 });
 
-test("asks for the day before the time, defaulting to every day at midnight", async () => {
-  const prompt = fakePrompt(["*", "00:00"]);
+const EVERY_DAY = ["1", "2", "3", "4", "5", "6", "0"];
 
-  expect(await pickSchedule(prompt)).toEqual({ hour: 0, minute: 0, day: null });
+test("asks for the days before the time, every day at midnight by default", async () => {
+  const prompt = fakePrompt([EVERY_DAY, "00:00"]);
+
+  expect(await pickSchedule(prompt)).toEqual({ hour: 0, minute: 0, days: [1, 2, 3, 4, 5, 6, 0] });
   expect(prompt.asked.map((asked) => asked.message)).toEqual([
-    "Which day should the skills sync?",
-    "What time?",
+    "Which days should the skills sync?",
+    "What time? 09:00 · 00:00 · 21:00",
   ]);
-  expect(prompt.asked[0]?.options).toMatchObject({ default: "*" });
+  expect(prompt.asked[0]?.options).toMatchObject({ initialValues: EVERY_DAY, min: 1 });
   expect(prompt.asked[1]?.options).toMatchObject({ default: "00:00" });
 });
 
-test("offers every day ahead of the week, starting on Monday", async () => {
-  const prompt = fakePrompt(["*", "00:00"]);
+test("ticks every day of the week, read Monday first", async () => {
+  const prompt = fakePrompt([EVERY_DAY, "00:00"]);
 
   await pickSchedule(prompt);
 
-  expect((prompt.asked[0]?.options as { options: { label: string }[] }).options.map((o) => o.label))
-    .toEqual([
-      "Every day",
-      "Mondays",
-      "Tuesdays",
-      "Wednesdays",
-      "Thursdays",
-      "Fridays",
-      "Saturdays",
-      "Sundays",
-    ]);
+  expect(
+    (prompt.asked[0]?.options as { options: { label: string }[] }).options.map((o) => o.label),
+  ).toEqual([
+    "Mondays",
+    "Tuesdays",
+    "Wednesdays",
+    "Thursdays",
+    "Fridays",
+    "Saturdays",
+    "Sundays",
+  ]);
 });
 
-test("keeps a chosen weekday and time", async () => {
-  const prompt = fakePrompt(["4", "3:30pm"]);
+test("keeps the chosen days and a typed time", async () => {
+  const prompt = fakePrompt([["1", "4"], "3:30pm"]);
 
-  expect(await pickSchedule(prompt)).toEqual({ hour: 15, minute: 30, day: 4 });
+  expect(await pickSchedule(prompt)).toEqual({ hour: 15, minute: 30, days: [1, 4] });
 });
 
 test("starts from the schedule already in place", async () => {
-  const prompt = fakePrompt(["2", "06:15"]);
+  const prompt = fakePrompt([["2"], "06:15"]);
 
-  await pickSchedule(prompt, { hour: 6, minute: 15, day: 2 });
+  await pickSchedule(prompt, { hour: 6, minute: 15, days: [2] });
 
-  expect(prompt.asked[0]?.options).toMatchObject({ default: "2" });
+  expect(prompt.asked[0]?.options).toMatchObject({ initialValues: ["2"] });
   expect(prompt.asked[1]?.options).toMatchObject({ default: "06:15" });
 });
 
 test("rejects a time it cannot read", async () => {
-  const prompt = fakePrompt(["*", "00:00"]);
+  const prompt = fakePrompt([EVERY_DAY, "00:00"]);
 
   await pickSchedule(prompt);
   const { validate } = prompt.asked[1]?.options as { validate: (value: string) => true | string };
 
   expect(validate("3:30pm")).toBe(true);
+  expect(validate("9am")).toBe(true);
   expect(validate("25:00")).toContain("24-hour");
 });
 
