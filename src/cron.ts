@@ -110,7 +110,7 @@ export const CronExpression = z.string().trim().transform((raw, ctx): Schedule =
 
   const [minuteField = "", hourField = "", dayOfMonth, month, dayOfWeek = ""] = fields;
   if (dayOfMonth !== "*" || month !== "*") {
-    return reject('day-of-month and month have to be * — the shape is "minute hour * * day-of-week"');
+    return reject("day of month and month are not supported, so both must be *");
   }
 
   const minute = wholeNumber(minuteField, 59);
@@ -119,8 +119,8 @@ export const CronExpression = z.string().trim().transform((raw, ctx): Schedule =
     return reject(
       /^\d+$/.test(minuteField) && /^\d+$/.test(hourField)
         ? `"${raw}" needs a minute of 0-59 and an hour of 0-23`
-        : `"${raw}" needs a plain minute and hour — lists, ranges and steps like */15 are only ` +
-            "supported for the day of week",
+        : `"${raw}" needs plain numbers for the minute and hour — lists, ranges and steps ` +
+            "like */15 only work for the day of week",
     );
   }
 

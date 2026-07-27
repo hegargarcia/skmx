@@ -78,10 +78,10 @@ Answer all three and nothing is asked, terminal or not. Answer some and the rest
 prompted for, which needs a terminal. `--skill` insists on a folder holding a
 `SKILL.md`, so a mistyped path fails at setup rather than pushing an empty folder.
 
-`--cron` takes the part of cron a schedule can hold — a minute, an hour and days of
-the week, with `*`, lists and ranges. Anything else, such as `*/15 * * * *` or a
-day-of-month, is refused rather than registered as something `status` would then
-describe wrongly.
+**Day of month and month are not supported**, so both have to be `*`. The minute and
+hour take plain numbers, and the day of week takes `*`, a list like `1,3,5`, or a
+range like `1-5`. Anything else — a day of month, or a step like `*/15` — is refused
+rather than registered as something `status` would then describe wrongly.
 
 Both answers are written to `~/.config/skill-sync/config.json`, which lives outside
 the checkout so the CLI behaves the same wherever you run it from.
