@@ -2,7 +2,10 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { defineCommand, option, type PromptApi } from "@bunli/core";
 import { z } from "zod";
-import { loadConfig, missingRepoMessage, type Config } from "./config.ts";
+import { loadConfig, missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
+import { assertGhReady, createRepo, listRepos } from "./github.ts";
+import { pickRepo, pickSkills } from "./onboarding.ts";
+import { discoverSkills, sshUrl } from "./skills.ts";
 import {
   formatTimeOfDay,
   installSchedule,
@@ -36,16 +39,20 @@ const repoOption = option(z.string().trim().min(1).optional(), {
 
 export const setup = defineCommand({
   name: "setup",
-  description: "Configure the skills repo and schedule the nightly sync",
+  description: "Pick the skills to sync and the repo to sync them to, then schedule it",
   options: { at: atOption, repo: repoOption },
   async handler({ flags, prompt, terminal }) {
     const config = await configure(flags.repo, prompt, terminal.isInteractive);
 
     await installSchedule(flags.at, config);
-    console.log(`Syncing ${config.skillsDir}`);
-    console.log(`     with ${config.repo} (${config.branch})`);
-    console.log(announce("Scheduled", flags.at));
-    console.log("Run `skill-sync sync` to sync now, or `skill-sync status` to check on it.");
+    prompt.note(
+      [
+        `Skills: ${config.skills.map((skill) => skill.name).join(", ")}`,
+        `Repo:   ${config.repo} (${config.branch})`,
+        announce("Scheduled", flags.at),
+      ].join("\n"),
+    );
+    console.log("Run `skill-sync sync` to push them now, or `skill-sync status` to check on it.");
   },
 });
 
@@ -115,7 +122,12 @@ export const status = defineCommand({
       ],
       ["health", health],
       ["repo", config.repo ? `${config.repo} (${config.branch})` : "not configured"],
-      ["skills", config.skillsDir],
+      [
+        "skills",
+        config.skills.length > 0
+          ? config.skills.map((skill) => skill.name).join(", ")
+          : "none selected",
+      ],
       ["config", config.configPath],
       ["state", config.stateDir],
     ] as const;
@@ -147,28 +159,52 @@ const healthy = (health: string) =>
   health === "ok" || health.startsWith("pending") || health.startsWith("paused");
 
 /**
- * Onboarding, shared by `setup` and by `start` when nothing is configured yet.
- * Asks for the repo when there is a terminal to ask in.
+ * Onboarding, shared by `setup` and by `start` when nothing is configured yet:
+ * pick the skills, pick or create the repo. Both need a terminal to ask in.
  */
 async function configure(repo: string | undefined, prompt: PromptApi, interactive: boolean) {
   const config = await loadConfig();
-  if (config.repo && repo === undefined) return config;
+  const configured = config.repo !== undefined && config.skills.length > 0;
+  if (configured && repo === undefined) return config;
 
-  const chosen =
-    repo ?? (interactive ? await prompt.text("git remote URL of your skills repo") : "");
-  if (chosen.trim() === "") {
-    console.error(missingRepoMessage(config.configPath));
+  if (!interactive) {
+    console.error(
+      repo === undefined
+        ? `${missingRepoMessage(config.configPath)}, and pick skills with \`skill-sync setup\` on a terminal`
+        : "picking skills needs a terminal — run `skill-sync setup` interactively",
+    );
     process.exit(1);
   }
 
-  return await saveRepo(config, chosen.trim());
+  prompt.intro("skill-sync setup");
+  const available = await discoverSkills();
+  if (available.length === 0) {
+    console.error("no skills found in ~/.claude/skills, ~/.agents/skills, or ~/.codex/skills");
+    process.exit(1);
+  }
+
+  const skills = await pickSkills(prompt, available, config.skills);
+  return await save(config, { repo: repo ?? (await resolveRepo(prompt)), skills });
 }
 
-async function saveRepo(config: Config, repo: string) {
+/** Lists the user's repos through `gh` — no OAuth flow of our own — and creates on request. */
+async function resolveRepo(prompt: PromptApi) {
+  await assertGhReady();
+  const choice = await pickRepo(prompt, await listRepos());
+
+  return "repo" in choice
+    ? choice.repo
+    : sshUrl(await createRepo(choice.create.name, choice.create.visibility));
+}
+
+async function save(config: Config, settings: { repo: string; skills: SyncedSkill[] }) {
   const file = Bun.file(config.configPath);
   const existing = (await file.exists()) ? await file.json() : {};
 
   await mkdir(dirname(config.configPath), { recursive: true });
-  await Bun.write(config.configPath, `${JSON.stringify({ ...existing, repo }, null, 2)}\n`);
+  await Bun.write(
+    config.configPath,
+    `${JSON.stringify({ ...existing, ...settings }, null, 2)}\n`,
+  );
   return await loadConfig();
 }

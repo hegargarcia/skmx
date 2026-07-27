@@ -1,34 +1,43 @@
 # skill-sync
 
-Keeps a Claude skills directory (`~/.claude/skills` by default) in sync with a git
-repo, on a nightly cron schedule.
+Pushes your agent skills to a git repo every night, then lets
+[skills.sh](https://skills.sh) install them back across your agents.
 
 ## Setup
 
 ```bash
 bun install
-mkdir -p ~/.skill-sync
-cat > ~/.skill-sync/config.json <<'JSON'
-{
-  "repo": "git@github.com:you/skills.git"
-}
-JSON
+bun src/index.ts setup
 ```
 
-Config lives outside the checkout so the CLI behaves the same wherever you run it
-from. `skillsDir` and `branch` can go in the same file; see
-[Configuration](#configuration).
+`setup` is interactive. It finds every skill with a `SKILL.md` under
+`~/.claude/skills`, `~/.agents/skills`, and `~/.codex/skills`, asks which to sync,
+then lists your repos through the `gh` CLI — including an option to create one — and
+asks where they should live. There is no OAuth flow of its own; `gh` holds the
+credentials.
 
-The repo it names holds the skills under a top-level `skills/` directory,
-mirroring the layout of your local skills directory; a brand-new empty repo works
-and gets populated on the first sync. Pushing runs unattended, so the machine
-needs credentials that work without a prompt — an SSH key without a passphrase,
-or a git credential helper.
+Both answers are written to `~/.skill-sync/config.json`, which lives outside the
+checkout so the CLI behaves the same wherever you run it from.
+
+The repo holds the skills the way
+[HegarGarcia/skills](https://github.com/HegarGarcia/skills) does:
+
+```
+skills/
+  <skill-name>/
+    SKILL.md        # its frontmatter `description` controls when the agent triggers it
+    ...             # optional CHANGELOG.md, references/, agents/, etc.
+```
+
+A brand-new empty repo works and gets populated on the first sync. Pushing runs
+unattended, so the machine needs credentials that work without a prompt — an SSH key
+without a passphrase, or a git credential helper. Prefer a public repo: skills.sh
+installs from one without credentials.
 
 ## Commands
 
 ```bash
-bun src/index.ts setup         # onboarding: configure the repo and schedule the sync
+bun src/index.ts setup         # onboarding: pick skills and a repo, then schedule
 bun src/index.ts start         # resume after a stop
 bun src/index.ts stop          # pause, keeping the configuration
 bun src/index.ts status        # schedule, last sync, and whether it is healthy
@@ -36,15 +45,15 @@ bun src/index.ts sync          # sync now
 bun src/index.ts --help        # also --version, and --help on any command
 ```
 
-`setup` takes `--at` for the time of day and `--repo` for the remote:
+`setup` takes `--at` for the time of day and `--repo` to skip the repo picker:
 
 ```bash
 bun src/index.ts setup --repo git@github.com:you/skills.git --at 3:30am
 ```
 
 `--at` accepts 24-hour `HH:MM` and 12-hour `3am` / `3:30pm`, and **defaults to
-midnight**. `--repo` writes into the config file, and is prompted for when the
-config has no repo yet and there is a terminal to ask in.
+midnight**. Picking skills always needs a terminal, so `setup` refuses to run
+non-interactively rather than guessing.
 
 `stop` is a pause: it unregisters the job but keeps the time on record, so `start`
 puts it back where it was. `start` on an unconfigured machine falls back to
@@ -72,26 +81,34 @@ bun run build    # bundle the CLI into dist/index.js
 bun run release  # version, tag, and publish (not exercised here)
 ```
 
-`git` work goes through [`simple-git`](https://github.com/steveukx/git-js);
-`rsync` and `tar` are still invoked with `Bun.$`.
+`git` work goes through [`simple-git`](https://github.com/steveukx/git-js), repo
+listing and creation through the `gh` CLI, and installation through the `skills`
+CLI. `rsync` is invoked with `Bun.$`.
 
 ## How a sync works
 
+skill-sync only pushes; **installing is skills.sh's job**. Each selected skill's
+folder is copied into `skills/<name>/` in the repo, committed, and pushed. Then
+`skills update --global --yes` runs for those skills, which is what puts the new
+version into every agent directory they are installed to.
+
 A clone of the repo lives in `~/.local/state/skill-sync/repo` and stays parked on
 the commit of the last successful sync, marked by the `refs/skill-sync/base` ref.
-That commit is the common ancestor that makes a real two-way merge possible: local
-edits are committed on top of it, then `origin` is merged into them, pushed, and
-the merged result is mirrored back to the skills directory.
+That commit is the common ancestor, so commits made to the repo from another
+machine are merged rather than overwritten.
 
-- **A merge conflict stops the sync.** The local skills directory is left
-  untouched and `status` reports the conflicting paths. Resolve them in the clone,
-  commit, and sync again.
-- **The first sync has no common ancestor**, so a skill that exists on both sides
-  with different contents cannot be merged without losing an edit. That is
-  reported as `diverged` and nothing is changed; reconcile those files once, then
-  sync again. Skills that exist on only one side are adopted by the other.
-- **Local skills are archived before being overwritten**, to
-  `~/.local/state/skill-sync/backups` (the last 10 runs are kept).
+- **A merge conflict stops the sync.** Local skills are left untouched and `status`
+  reports the conflicting paths. Resolve them in the clone, commit, and sync again.
+- **The first sync has no common ancestor**, so anything the push would overwrite or
+  delete cannot be resolved without losing content. That is reported as `diverged`
+  and nothing is changed — reconcile those files once, then sync again. Files this
+  machine simply adds are not a conflict.
+- **Skills the repo has that you did not select are left alone.** Only the folders
+  of selected skills are touched, and only within them does a local deletion
+  propagate.
+- **Skills that skills.sh has never installed** cannot be refreshed by `update`,
+  which exits zero regardless. The sync names them and tells you to run
+  `bunx skills add <owner/repo>` once to enroll them.
 
 State lives under `${XDG_STATE_HOME:-~/.local/state}/skill-sync`: `state.json`
 holds the last sync record, `schedule.json` the time `start` registered, and
@@ -118,8 +135,18 @@ typos do not pass silently.
 | Key | Environment variable | Default | Purpose |
 | --- | --- | --- | --- |
 | `repo` | `SKILL_SYNC_REPO` | — | git remote URL of the skills repo (required) |
-| `skillsDir` | `SKILL_SYNC_SKILLS_DIR` | `~/.claude/skills` | skills directory to sync |
+| `skills` | — | `[]` | the skills to sync, as `{ "name", "path" }` entries |
 | `branch` | `SKILL_SYNC_BRANCH` | `main` | branch to sync |
+
+`setup` writes `skills` for you, but it is plain JSON and `path` accepts a leading
+`~`, so a skill kept outside the standard agent directories can be added by hand:
+
+```json
+{
+  "repo": "git@github.com:you/skills.git",
+  "skills": [{ "name": "showrunner", "path": "~/.claude/skills/showrunner" }]
+}
+```
 
 `SKILL_SYNC_HOME` moves the config directory itself (default `~/.skill-sync`), and
 `XDG_STATE_HOME` moves the state directory. `status` prints both paths.
