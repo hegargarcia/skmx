@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import {
+  CronExpression,
   cronExpression,
   formatSchedule,
   formatTimeOfDay,
@@ -49,10 +50,47 @@ test.each([
   [[1, 2, 3, 4, 5, 6, 0], "Every day at 03:05"],
   [[1], "Mondays at 03:05"],
   [[0], "Sundays at 03:05"],
+  [[1, 2, 3, 4, 5], "Weekdays at 03:05"],
+  [[6, 0], "Weekends at 03:05"],
   // Listed as the week is read, not in cron's Sunday-first order.
   [[5, 0, 1], "Mon · Fri · Sun at 03:05"],
 ])("describes days %p as a schedule", (days, expected) => {
   expect(formatSchedule({ hour: 3, minute: 5, days })).toBe(expected);
+});
+
+test.each([
+  ["0 9 * * *", { hour: 9, minute: 0, days: [1, 2, 3, 4, 5, 6, 0] }],
+  ["30 21 * * 1", { hour: 21, minute: 30, days: [1] }],
+  ["0 9 * * 1-5", { hour: 9, minute: 0, days: [1, 2, 3, 4, 5] }],
+  ["0 9 * * 1,3,5", { hour: 9, minute: 0, days: [1, 3, 5] }],
+  ["0 9 * * 6,0", { hour: 9, minute: 0, days: [6, 0] }],
+  // Cron counts Sunday as both 0 and 7.
+  ["0 9 * * 7", { hour: 9, minute: 0, days: [0] }],
+  ["  0   9 * * 1-2,4  ", { hour: 9, minute: 0, days: [1, 2, 4] }],
+])("reads %p as a schedule", (expression, expected) => {
+  expect(CronExpression.parse(expression)).toEqual(expected);
+});
+
+test.each([
+  ["0 9 * *", "five-field"],
+  ["0 9 1 * *", "day-of-month and month"],
+  ["0 9 * JAN *", "day-of-month and month"],
+  ["60 9 * * *", "minute or hour"],
+  ["0 24 * * *", "minute or hour"],
+  ["*/15 * * * *", "minute or hour"],
+  ["0 9 * * 8", "day of week"],
+  ["0 9 * * MON", "day of week"],
+])("refuses %p rather than scheduling something else", (expression, reason) => {
+  const result = CronExpression.safeParse(expression);
+
+  expect(result.success).toBe(false);
+  expect(result.error?.issues[0]?.message).toContain(reason);
+});
+
+test("round-trips a schedule through its cron expression", () => {
+  const schedule = { hour: 9, minute: 30, days: [1, 3, 5] };
+
+  expect(CronExpression.parse(cronExpression(schedule))).toEqual(schedule);
 });
 
 test("puts several days into one cron expression, lowest first", () => {

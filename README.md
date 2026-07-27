@@ -35,25 +35,53 @@ It then lists your repos through the `gh` CLI — including an option to create 
 and asks where the skills should live. There is no OAuth flow of its own; `gh` holds
 the credentials.
 
-Last it asks when to sync: the days first, then the time.
+Last it asks when to sync — the common rhythms first, the day-by-day choice last,
+the way calendars and job monitors ask it:
 
 ```
-? Which days should the skills sync?
-> [x] Mondays
-  [x] Tuesdays
-  …
+? How often should the skills sync?
+> Every day    nightly
+  Weekdays     Mon–Fri
+  Weekends     Sat & Sun
+  Pick days…   choose them one by one
 
 ? What time? 09:00 · 00:00 · 21:00
   00:00
 ```
 
-Days are checkboxes, so a schedule can name any set of them — every day, weekdays,
-or just Sundays. The time is typed, with three common ones offered; it accepts
-24-hour `HH:MM` and 12-hour `3am` / `3:30pm`, and is checked before it is accepted.
-The defaults are **every day at 00:00**.
+`Pick days…` opens a checkbox per day, so any set works. The time is typed, with
+three common ones offered; it accepts 24-hour `HH:MM` and 12-hour `3am` / `3:30pm`,
+and is checked before it is accepted. The defaults are **every day at 00:00**.
 
 Several days become one cron entry: Mondays, Wednesdays and Fridays at 09:00 is
 `0 9 * * 1,3,5`, and `status` reads it back as `Mon · Wed · Fri at 09:00`.
+
+## Setting up without the prompts
+
+Every question has a flag, so a machine can be set up with no terminal at all:
+
+```bash
+bun src/index.ts setup \
+  --repo HegarGarcia/skills \
+  --skill ~/.claude/skills/showrunner \
+  --skill ~/.claude/skills/personal-code-style \
+  --cron "0 9 * * 1-5"
+```
+
+| Flag | Answers | Accepts |
+| --- | --- | --- |
+| `--repo`, `-r` | which repo | `owner/name` or any git URL |
+| `--skill`, `-s` | which skills | a path to a skill folder; repeat it for more |
+| `--cron`, `-c` | when | a cron expression |
+
+Answer all three and nothing is asked, terminal or not. Answer some and the rest are
+prompted for, which needs a terminal. `--skill` insists on a folder holding a
+`SKILL.md`, so a mistyped path fails at setup rather than pushing an empty folder.
+
+`--cron` takes the part of cron a schedule can hold — a minute, an hour and days of
+the week, with `*`, lists and ranges. Anything else, such as `*/15 * * * *` or a
+day-of-month, is refused rather than registered as something `status` would then
+describe wrongly.
 
 Both answers are written to `~/.config/skill-sync/config.json`, which lives outside
 the checkout so the CLI behaves the same wherever you run it from.
@@ -85,21 +113,15 @@ bun src/index.ts sync          # sync now
 bun src/index.ts --help        # also --version, and --help on any command
 ```
 
-`setup` takes `--repo` to skip the repo picker:
-
-```bash
-bun src/index.ts setup --repo git@github.com:you/skills.git
-```
-
 **Run `setup` again to change any of it.** It asks the same questions with your
 current answers filled in — the skills you sync are ticked, the repo you are using is
-selected and hinted `in use`, and the days and time start on what is already
-scheduled — so it doubles as the edit screen.
+selected and hinted `in use`, and the rhythm and time start on what is already
+scheduled — so it doubles as the edit screen. Any answer can be given as a flag
+instead; see [Setting up without the prompts](#setting-up-without-the-prompts).
 
-Every question needs a terminal, so `setup` refuses to run non-interactively rather
-than guessing. On an already configured machine it asks nothing and simply
-re-registers the existing schedule, which is what makes it safe to call from a
-script.
+A question with no answer and no terminal to ask in is an error rather than a guess.
+On an already configured machine `setup` asks nothing and simply re-registers the
+existing schedule, which is what makes it safe to call from a script.
 
 `stop` is a pause: it unregisters the job but keeps the day and time on record, so
 `start` puts it back where it was. `start` on an unconfigured machine falls back to

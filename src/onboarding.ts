@@ -82,16 +82,40 @@ async function pickCopy(prompt: PromptApi, group: SkillGroup) {
 /** Offered as one keystroke each; any other time can be typed instead. */
 const SUGGESTED_TIMES = ["09:00", "00:00", "21:00"] as const;
 
+const PICK_DAYS = "pick";
+
 /**
- * Asks when to sync: which days first, then the time. Defaults to every day at
+ * The handful of rhythms most schedules actually are, which is how calendars and job
+ * monitors ask this: common shapes first, the day-by-day choice last.
+ */
+const CADENCES = [
+  { value: "daily", label: "Every day", hint: "nightly", days: [...ALL_DAYS] },
+  { value: "weekdays", label: "Weekdays", hint: "Mon–Fri", days: [1, 2, 3, 4, 5] },
+  { value: "weekends", label: "Weekends", hint: "Sat & Sun", days: [6, 0] },
+] as const;
+
+const sameDays = (one: number[], other: readonly number[]) =>
+  one.length === other.length && [...one].sort().join() === [...other].sort().join();
+
+/**
+ * Asks when to sync: how often first, then the time. Defaults to every day at
  * midnight, or to whatever is already scheduled.
  */
 export async function pickSchedule(prompt: PromptApi, current = EVERY_DAY_AT_MIDNIGHT) {
-  const days = await prompt.multiselect("Which days should the skills sync?", {
-    options: ALL_DAYS.map((day) => ({ value: String(day), label: dayName(day) })),
-    initialValues: current.days.map(String),
-    min: 1,
+  const matching = CADENCES.find((cadence) => sameDays(current.days, cadence.days));
+
+  const cadence = await prompt.select("How often should the skills sync?", {
+    options: [
+      ...CADENCES.map(({ value, label, hint }) => ({ value, label, hint })),
+      { value: PICK_DAYS, label: "Pick days…", hint: "choose them one by one" },
+    ],
+    default: matching?.value ?? PICK_DAYS,
   });
+
+  const days =
+    cadence === PICK_DAYS
+      ? await pickDays(prompt, current.days)
+      : [...CADENCES.find(({ value }) => value === cadence)!.days];
 
   const answer = await prompt(`What time? ${SUGGESTED_TIMES.join(SEPARATOR)}`, {
     default: formatTimeOfDay(current),
@@ -101,7 +125,17 @@ export async function pickSchedule(prompt: PromptApi, current = EVERY_DAY_AT_MID
       "use 24-hour HH:MM (03:00) or 12-hour (3am, 3:30pm)",
   });
 
-  return { ...TimeOfDay.parse(answer), days: days.map(Number) } satisfies Schedule;
+  return { ...TimeOfDay.parse(answer), days } satisfies Schedule;
+}
+
+async function pickDays(prompt: PromptApi, current: number[]) {
+  const days = await prompt.multiselect("Which days?", {
+    options: ALL_DAYS.map((day) => ({ value: String(day), label: dayName(day) })),
+    initialValues: current.map(String),
+    min: 1,
+  });
+
+  return days.map(Number);
 }
 
 /** Asks which repo to sync to, offering to create one. `current` starts selected. */

@@ -72,8 +72,13 @@ export const EVERY_DAY_AT_MIDNIGHT: Schedule = { hour: 0, minute: 0, days: [...A
 /** Monday first, as the week is read, rather than cron's Sunday-first numbering. */
 const asRead = (days: number[]) => [...days].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
 
+const named = (days: number[], others: number[]) =>
+  days.length === others.length && [...days].sort().join() === [...others].sort().join();
+
 export const formatDays = (days: number[]) => {
-  if (days.length >= ALL_DAYS.length) return "Every day";
+  if (named(days, [...ALL_DAYS])) return "Every day";
+  if (named(days, [1, 2, 3, 4, 5])) return "Weekdays";
+  if (named(days, [6, 0])) return "Weekends";
   if (days.length === 1) return dayName(days[0]!);
 
   return asRead(days)
@@ -86,6 +91,56 @@ export const formatSchedule = (schedule: Schedule) =>
 
 export const formatTimeOfDay = ({ hour, minute }: TimeOfDay) =>
   `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+
+/**
+ * The other half of `cronExpression`, for `--cron`. Only what a schedule can hold is
+ * accepted: a minute, an hour and days of the week. Anything else is refused rather
+ * than registered as something `status` would then describe wrongly.
+ */
+export const CronExpression = z.string().trim().transform((raw, ctx): Schedule => {
+  const reject = (message: string) => {
+    ctx.addIssue({ code: "custom", message: `${message} — expected "minute hour * * day-of-week"` });
+    return z.NEVER;
+  };
+
+  const fields = raw.split(/\s+/);
+  if (fields.length !== 5) return reject(`"${raw}" is not a five-field cron expression`);
+
+  const [minuteField = "", hourField = "", dayOfMonth, month, dayOfWeek = ""] = fields;
+  if (dayOfMonth !== "*" || month !== "*") {
+    return reject("day-of-month and month have to be *");
+  }
+
+  const minute = wholeNumber(minuteField, 59);
+  const hour = wholeNumber(hourField, 23);
+  if (minute === null || hour === null) return reject(`"${raw}" has a minute or hour out of range`);
+
+  const days = dayOfWeek === "*" ? [...ALL_DAYS] : weekdays(dayOfWeek);
+  if (days === null) return reject(`"${raw}" has a day of week that is not 0-7 or a range`);
+
+  return { hour, minute, days };
+});
+
+function wholeNumber(field: string, max: number) {
+  const value = Number(field);
+  return /^\d+$/.test(field) && value <= max ? value : null;
+}
+
+/** Cron counts Sunday as both 0 and 7. */
+function weekdays(field: string) {
+  const days = new Set<number>();
+
+  for (const part of field.split(",")) {
+    const [from, to = from] = part.split("-");
+    const start = wholeNumber(from ?? "", 7);
+    const end = wholeNumber(to ?? "", 7);
+    if (start === null || end === null || start > end) return null;
+
+    for (let day = start; day <= end; day++) days.add(day % 7);
+  }
+
+  return days.size > 0 ? [...days] : null;
+}
 
 export const cronExpression = ({ hour, minute, days }: Schedule) =>
   `${minute} ${hour} * * ${

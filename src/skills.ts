@@ -1,6 +1,6 @@
 import { lstat, mkdir, readdir, readlink, rm, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 /** Where the agents this machine runs keep their skills, relative to the home directory. */
 const AGENT_SKILL_DIRS = [".claude/skills", ".agents/skills", ".codex/skills"];
@@ -102,6 +102,19 @@ export function githubSlug(repo: string) {
 }
 
 export const sshUrl = (slug: string) => `git@github.com:${slug}.git`;
+
+/**
+ * Turns a path given on the command line into a skill to sync. Requires a SKILL.md,
+ * so a mistyped path fails here rather than pushing an empty folder.
+ */
+export async function skillAt(path: string) {
+  const resolved = resolve(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
+  if (!(await Bun.file(join(resolved, "SKILL.md")).exists())) {
+    throw new Error(`no SKILL.md in ${resolved}`);
+  }
+
+  return { name: basename(resolved), path: resolved };
+}
 
 /** Where the clone of `repo` lives under the repos directory. */
 export const repoDirName = (repo: string) =>

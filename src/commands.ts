@@ -5,11 +5,19 @@ import { z } from "zod";
 import { loadConfig, missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
 import { assertGhReady, createRepo, listRepos } from "./github.ts";
 import { pickRepo, pickSchedule, pickSkills } from "./onboarding.ts";
-import { discoverSkills, githubSlug, groupSkills, repoDirName, sshUrl } from "./skills.ts";
+import {
+  discoverSkills,
+  githubSlug,
+  groupSkills,
+  repoDirName,
+  skillAt,
+  sshUrl,
+} from "./skills.ts";
 import {
   formatTimeOfDay,
   installSchedule,
   isRegistered,
+  CronExpression,
   EVERY_DAY_AT_MIDNIGHT,
   formatSchedule,
   nextRun,
@@ -29,19 +37,38 @@ const formatDateTime = (date: Date) =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
   `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
-const repoOption = option(z.string().trim().min(1).optional(), {
-  short: "r",
-  description: "git remote URL of the skills repo",
+/** `owner/repo` is what the pickers show and what people paste, so accept it too. */
+const repoOption = option(
+  z
+    .string()
+    .trim()
+    .min(1)
+    .transform((repo) => (/^[\w.-]+\/[\w.-]+$/.test(repo) ? sshUrl(repo) : repo))
+    .optional(),
+  { short: "r", description: "Skills repo as owner/name or a git URL" },
+);
+
+const skillOption = option(z.array(z.string().trim().min(1)).optional(), {
+  short: "s",
+  repeatable: true,
+  description: "Path to a skill to sync; repeat for more",
+});
+
+const cronOption = option(CronExpression.optional(), {
+  short: "c",
+  description: 'When to sync, as cron — "0 9 * * 1-5"',
 });
 
 export const setup = defineCommand({
   name: "setup",
   description: "Pick the skills to sync, the repo to sync them to, and when",
-  options: { repo: repoOption },
+  options: { repo: repoOption, skill: skillOption, cron: cronOption },
   async handler({ flags, prompt, terminal }) {
     const existing = await readSchedule(await loadConfig());
     const { config, schedule } = await configure(prompt, terminal.isInteractive, {
       repo: flags.repo,
+      skills: flags.skill && (await Promise.all(flags.skill.map(skillAt))),
+      cron: flags.cron,
       // Running setup again is how the configuration is changed, so always ask.
       edit: true,
       schedule: existing ?? undefined,
@@ -181,40 +208,61 @@ const announce = (verb: string, schedule: Schedule) =>
 async function configure(
   prompt: PromptApi,
   interactive: boolean,
-  { repo, edit, schedule }: { repo?: string; edit: boolean; schedule?: Schedule },
+  {
+    repo,
+    skills,
+    cron,
+    edit,
+    schedule,
+  }: {
+    repo?: string;
+    skills?: SyncedSkill[];
+    cron?: Schedule;
+    edit: boolean;
+    schedule?: Schedule;
+  },
 ) {
   const config = await loadConfig();
   const configured = config.repo !== undefined && config.skills.length > 0;
-  const keep = { config, schedule: schedule ?? EVERY_DAY_AT_MIDNIGHT };
-  if (configured && !edit) return keep;
+  const given = repo !== undefined || skills !== undefined || cron !== undefined;
+  if (configured && !edit) return { config, schedule: schedule ?? EVERY_DAY_AT_MIDNIGHT };
+
+  // Answering everything with flags is a complete setup, terminal or not.
+  if (repo !== undefined && skills !== undefined && cron !== undefined) {
+    return { config: await save(config, { repo, skills }), schedule: cron };
+  }
 
   if (!interactive) {
-    // A configured machine can still be re-registered without a terminal, since
-    // that asks nothing; changing what is synced, or when, does.
-    if (configured && repo === undefined) return keep;
+    // Nothing left to ask on a configured machine, so re-register what it has.
+    if (configured && !given) {
+      return { config, schedule: schedule ?? EVERY_DAY_AT_MIDNIGHT };
+    }
 
     console.error(
-      configured
-        ? "changing what is synced needs a terminal — run `skill-sync setup` interactively"
-        : `${missingRepoMessage(config.configPath)}, and pick skills with \`skill-sync setup\` on a terminal`,
+      `${configured ? "changing what is synced" : missingRepoMessage(config.configPath)} needs a ` +
+        "terminal — or answer every question at once with --repo, --skill and --cron",
     );
     process.exit(1);
   }
 
   prompt.intro(`skill-sync ${configured ? "setup · editing" : "setup"}`);
+  const chosenSkills = skills ?? (await askForSkills(prompt, config.skills));
+  const chosenRepo = repo ?? (await resolveRepo(prompt, config.repo));
+
+  return {
+    config: await save(config, { repo: chosenRepo, skills: chosenSkills }),
+    schedule: cron ?? (await pickSchedule(prompt, schedule)),
+  };
+}
+
+async function askForSkills(prompt: PromptApi, current: SyncedSkill[]) {
   const available = await groupSkills(await discoverSkills());
   if (available.length === 0) {
     console.error("no skills found in ~/.claude/skills, ~/.agents/skills, or ~/.codex/skills");
     process.exit(1);
   }
 
-  const skills = await pickSkills(prompt, available, config.skills);
-  const chosen = repo ?? (await resolveRepo(prompt, config.repo));
-
-  return {
-    config: await save(config, { repo: chosen, skills }),
-    schedule: await pickSchedule(prompt, schedule),
-  };
+  return await pickSkills(prompt, available, current);
 }
 
 /** Lists the user's repos through `gh` — no OAuth flow of our own — and creates on request. */
