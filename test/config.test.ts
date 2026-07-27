@@ -38,7 +38,7 @@ test("falls back to the defaults when there is no config file", async () => {
 
   expect(config.repo).toBeUndefined();
   expect(config.branch).toBe("main");
-  expect(config.skillsDir).toBe(join(homedir(), ".claude", "skills"));
+  expect(config.skills).toEqual([]);
   expect(config.configPath).toBe(join(home, "config.json"));
 });
 
@@ -51,10 +51,14 @@ test("reads settings from the config file", async () => {
   expect(config.branch).toBe("trunk");
 });
 
-test("expands a leading ~ in the skills directory", async () => {
-  await writeConfigFile({ skillsDir: "~/elsewhere/skills" });
+test("reads the skills to sync, expanding a leading ~ in their paths", async () => {
+  await writeConfigFile({
+    skills: [{ name: "showrunner", path: "~/.claude/skills/showrunner" }],
+  });
 
-  expect((await loadConfig()).skillsDir).toBe(join(homedir(), "elsewhere", "skills"));
+  expect((await loadConfig()).skills).toEqual([
+    { name: "showrunner", path: join(homedir(), ".claude", "skills", "showrunner") },
+  ]);
 });
 
 test("lets environment variables override the config file", async () => {

@@ -2,7 +2,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-const DEFAULT_SKILLS_DIR = "~/.claude/skills";
 const DEFAULT_BRANCH = "main";
 
 const expandHome = (path: string) =>
@@ -11,17 +10,24 @@ const expandHome = (path: string) =>
 const EnvSchema = z.object({
   SKILL_SYNC_HOME: z.string().trim().min(1).optional(),
   SKILL_SYNC_REPO: z.string().trim().min(1).optional(),
-  SKILL_SYNC_SKILLS_DIR: z.string().trim().min(1).optional(),
   SKILL_SYNC_BRANCH: z.string().trim().min(1).optional(),
   XDG_STATE_HOME: z.string().trim().min(1).optional(),
 });
+
+/** One skill to sync, and where this machine keeps it. */
+const SyncedSkillSchema = z.object({
+  name: z.string().trim().min(1),
+  path: z.string().trim().min(1).transform(expandHome),
+});
+
+export type SyncedSkill = z.output<typeof SyncedSkillSchema>;
 
 /** Shape of `config.json`; unknown keys are rejected so typos do not pass silently. */
 const FileSchema = z
   .object({
     repo: z.string().trim().min(1).optional(),
-    skillsDir: z.string().trim().min(1).optional(),
     branch: z.string().trim().min(1).optional(),
+    skills: z.array(SyncedSkillSchema).optional(),
   })
   .strict();
 
@@ -40,13 +46,12 @@ export async function loadConfig() {
   return {
     repo: env.SKILL_SYNC_REPO ?? file.repo,
     branch: env.SKILL_SYNC_BRANCH ?? file.branch ?? DEFAULT_BRANCH,
-    skillsDir: expandHome(env.SKILL_SYNC_SKILLS_DIR ?? file.skillsDir ?? DEFAULT_SKILLS_DIR),
+    skills: file.skills ?? [],
     configPath,
     stateDir,
     clonePath: join(stateDir, "repo"),
     statePath: join(stateDir, "state.json"),
     schedulePath: join(stateDir, "schedule.json"),
-    backupsDir: join(stateDir, "backups"),
     cronLogPath: join(stateDir, "cron.log"),
   } as const;
 }

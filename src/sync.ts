@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { $ } from "bun";
 import {
@@ -9,10 +9,10 @@ import {
   type MergeResult,
   type SimpleGit,
 } from "simple-git";
-import { missingRepoMessage, type Config } from "./config.ts";
+import { missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
+import { githubSlug, triggerInstall } from "./skills.ts";
 import { writeLastSync, type SyncRecord } from "./state.ts";
 
-const BACKUPS_KEPT = 10;
 const DIVERGENT_PATHS_LISTED = 4;
 
 /** Used only when the machine has no git identity of its own. */
@@ -52,10 +52,15 @@ export async function runSync(config: Config) {
 }
 
 async function performSync(config: Config) {
-  const { repo, branch, clonePath } = config;
+  const { repo, branch, clonePath, skills } = config;
   if (!repo) throw new Error(missingRepoMessage(config.configPath));
-  if (!(await isDirectory(config.skillsDir))) {
-    throw new Error(`skills directory not found: ${config.skillsDir}`);
+  if (skills.length === 0) {
+    throw new Error(`no skills selected to sync — run \`skill-sync setup\``);
+  }
+  for (const skill of skills) {
+    if (!(await isDirectory(skill.path))) {
+      throw new Error(`${skill.name} is no longer at ${skill.path} — run \`skill-sync setup\``);
+    }
   }
 
   await mkdir(config.stateDir, { recursive: true });
@@ -78,16 +83,22 @@ async function performSync(config: Config) {
     if (published) await git.reset(ResetMode.HARD, [remoteBranch]);
     await git.clean(CleanOptions.FORCE + CleanOptions.RECURSIVE);
 
-    // Without a base there is no common ancestor to merge against, so a file that
-    // differs in both places cannot be resolved without losing an edit.
-    const divergent = await filesDifferingInBoth(config.skillsDir, skillsInRepo);
+    // Without a base there is no common ancestor to merge against, so anything the
+    // push would overwrite or delete cannot be resolved without losing content.
+    const divergent = (
+      await Promise.all(
+        skills.map((skill) => unreconciled(skill, join(skillsInRepo, skill.name))),
+      )
+    ).flat();
     if (divergent.length > 0) return diverged(divergent, clonePath);
   }
-  const mirrorIn = firstRun
-    ? // Keep skills the remote has and this machine does not.
-      MIRROR
-    : [...MIRROR, "--delete"];
-  await $`rsync ${mirrorIn} ${`${config.skillsDir}/`} ${`${skillsInRepo}/`}`.quiet();
+
+  for (const skill of skills) {
+    const destination = join(skillsInRepo, skill.name);
+    await mkdir(destination, { recursive: true });
+    // --delete drops files removed from the skill, and stays inside that skill's folder.
+    await $`rsync ${MIRROR} --delete ${`${skill.path}/`} ${`${destination}/`}`.quiet();
+  }
 
   const committed = await commitLocalEdits(git);
   const incoming = published ? await countCommits(git, `HEAD..${remoteBranch}`) : 0;
@@ -106,8 +117,6 @@ async function performSync(config: Config) {
       : 0;
   if (outgoing > 0) await git.push(["--set-upstream", "origin", branch]);
 
-  const restored = await mirrorToLocal(config, skillsInRepo);
-
   // Both sides now match this commit, making it the ancestor the next sync merges from.
   await git.raw(["update-ref", BASE_REF, "HEAD"]);
   const head = await git.revparse(["--short", "HEAD"]);
@@ -116,14 +125,45 @@ async function performSync(config: Config) {
     committed && "committed local edits",
     incoming > 0 && `merged ${plural(incoming, "commit")} from origin`,
     outgoing > 0 && `pushed ${plural(outgoing, "commit")}`,
-    restored > 0 && `updated ${plural(restored, "path")} locally`,
   ].filter((change): change is string => change !== false);
+
+  // Installing is skills.sh's job; a push nobody installed has not reached the agents.
+  const installed = changes.length > 0 ? await install(repo, skills) : null;
+  if (installed?.ok === false) {
+    return {
+      status: "error",
+      summary: `${changes.join(", ")}, but the skills.sh update failed: ${installed.reason}`,
+      commit: head,
+    } as const;
+  }
+
+  if (installed?.refreshed.length) changes.push("triggered the skills.sh update");
+  if (installed?.missing.length) {
+    changes.push(
+      `${installed.missing.join(", ")} not installed yet — run ` +
+        `\`bunx skills add ${githubSlug(repo)}\` once`,
+    );
+  }
 
   return {
     status: "ok",
     summary: changes.length > 0 ? changes.join(", ") : "already in sync",
     commit: head,
   } as const;
+}
+
+/**
+ * Skips the trigger for remotes skills.sh cannot install from, which keeps local
+ * paths usable as repos.
+ */
+async function install(repo: string, skills: readonly SyncedSkill[]) {
+  const slug = githubSlug(repo);
+  if (slug === null) return null;
+
+  return await triggerInstall(
+    slug,
+    skills.map((skill) => skill.name),
+  );
 }
 
 /** A failed git command carries its reason on stderr; the message is only an exit code. */
@@ -185,14 +225,30 @@ const contentChanges = (itemized: string) =>
     .split("\n")
     .filter((line) => line !== "" && !line.startsWith("."));
 
-/** Paths that exist on both sides with different contents. */
-async function filesDifferingInBoth(skillsDir: string, skillsInRepo: string) {
-  const compare =
-    await $`rsync ${MIRROR} --dry-run --existing --itemize-changes ${`${skillsDir}/`} ${`${skillsInRepo}/`}`.quiet();
+/**
+ * What pushing this skill would overwrite or delete in the repo: files that exist on
+ * both sides with different contents, and files the repo has that this machine does
+ * not. New local files are not listed — adding those loses nothing.
+ */
+async function unreconciled(skill: SyncedSkill, destination: string) {
+  const from = `${skill.path}/`;
+  const to = `${destination}/`;
+  const [differing, deleting] = await Promise.all([
+    $`rsync ${MIRROR} --dry-run --existing --itemize-changes ${from} ${to}`.quiet(),
+    $`rsync ${MIRROR} --delete --dry-run --itemize-changes ${from} ${to}`.quiet(),
+  ]);
 
-  return contentChanges(compare.stdout.toString())
-    .filter((line) => line.startsWith(">f"))
-    .map((line) => line.slice(line.indexOf(" ") + 1));
+  const overwritten = contentChanges(differing.stdout.toString()).filter((line) =>
+    line.startsWith(">f"),
+  );
+  const removed = deleting.stdout
+    .toString()
+    .split("\n")
+    .filter((line) => line.startsWith("*deleting"));
+
+  return [...overwritten, ...removed].map(
+    (line) => `${skill.name}/${line.slice(line.indexOf(" ") + 1).trim()}`,
+  );
 }
 
 function diverged(paths: string[], clonePath: string) {
@@ -227,26 +283,3 @@ async function abortMerge(git: SimpleGit, error: unknown, clonePath: string) {
   } as const;
 }
 
-async function mirrorToLocal(config: Config, skillsInRepo: string) {
-  const paths = [`${skillsInRepo}/`, `${config.skillsDir}/`];
-  const preview = await $`rsync ${MIRROR} --delete --dry-run --itemize-changes ${paths}`.quiet();
-  const changed = contentChanges(preview.stdout.toString());
-  if (changed.length === 0) return 0;
-
-  await backupLocalSkills(config);
-  await $`rsync ${MIRROR} --delete ${paths}`.quiet();
-  return changed.length;
-}
-
-/** Mirroring back can delete local files, so keep a rollback point. */
-async function backupLocalSkills(config: Config) {
-  await mkdir(config.backupsDir, { recursive: true });
-  const stamp = new Date().toISOString().replaceAll(":", "-");
-  const archive = join(config.backupsDir, `skills-${stamp}.tar.gz`);
-  await $`tar -czf ${archive} -C ${config.skillsDir} .`.quiet();
-
-  const archives = (await readdir(config.backupsDir)).filter((name) => name.endsWith(".tar.gz"));
-  for (const stale of archives.sort().slice(0, -BACKUPS_KEPT)) {
-    await rm(join(config.backupsDir, stale));
-  }
-}

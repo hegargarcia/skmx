@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, rm, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
@@ -10,35 +10,45 @@ const GIT_ID = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
 
 let root: string;
 let config: Config;
+/** Where this machine keeps its skills, one directory per skill. */
+let skillsHome: string;
 /** A second clone of the remote, standing in for another machine. */
 let other: string;
 
-const localSkill = (name: string) => Bun.file(join(config.skillsDir, name, "SKILL.md"));
-const otherSkill = (name: string) => Bun.file(join(other, "skills", name, "SKILL.md"));
+const localFile = (skill: string, file = "SKILL.md") =>
+  Bun.file(join(skillsHome, skill, file));
+const otherFile = (skill: string, file = "SKILL.md") =>
+  Bun.file(join(other, "skills", skill, file));
 
-async function pushFromOther(name: string, body: string) {
-  await Bun.write(otherSkill(name), body);
+/** Puts a skill under this machine's control and tells skill-sync to sync it. */
+async function selectSkill(name: string) {
+  await mkdir(join(skillsHome, name), { recursive: true });
+  config = { ...config, skills: [...config.skills, { name, path: join(skillsHome, name) }] };
+}
+
+async function pushFromOther(skill: string, body: string, file = "SKILL.md") {
+  await Bun.write(otherFile(skill, file), body);
   await $`git -C ${other} add -A`.quiet();
-  await $`git ${GIT_ID} -C ${other} commit -m ${`edit ${name}`}`.quiet();
+  await $`git ${GIT_ID} -C ${other} commit -m ${`edit ${skill}`}`.quiet();
   await $`git -C ${other} push origin main`.quiet();
 }
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "skill-sync-test-"));
   const remote = join(root, "remote.git");
-  const skillsDir = join(root, "skills");
   const stateDir = join(root, "state");
+  skillsHome = join(root, "skills");
 
   config = {
+    // A local path is not a GitHub remote, so no skills.sh install is triggered.
     repo: remote,
     branch: "main",
-    skillsDir,
+    skills: [],
     configPath: join(root, "config.json"),
     stateDir,
     clonePath: join(stateDir, "repo"),
     statePath: join(stateDir, "state.json"),
     schedulePath: join(stateDir, "schedule.json"),
-    backupsDir: join(stateDir, "backups"),
     cronLogPath: join(stateDir, "cron.log"),
   };
 
@@ -48,9 +58,9 @@ beforeEach(async () => {
   await $`git -C ${other} checkout -B main`.quiet();
   await pushFromOther("alpha", "alpha v1\n");
 
-  // The local skills directory starts out matching the remote.
-  await mkdir(skillsDir, { recursive: true });
-  await $`rsync -a ${`${join(other, "skills")}/`} ${`${skillsDir}/`}`.quiet();
+  // This machine's copy of alpha starts out matching the remote.
+  await selectSkill("alpha");
+  await Bun.write(localFile("alpha"), "alpha v1\n");
 });
 
 afterEach(async () => {
@@ -59,66 +69,72 @@ afterEach(async () => {
 
 test("pushes local skill edits to the remote", async () => {
   await runSync(config);
-  await Bun.write(localSkill("alpha"), "alpha v2\n");
-  await Bun.write(localSkill("beta"), "beta v1\n");
+  await Bun.write(localFile("alpha"), "alpha v2\n");
 
   const record = await runSync(config);
 
   expect(record).toMatchObject({ status: "ok" });
   expect(record.summary).toContain("pushed");
   await $`git -C ${other} pull --ff-only`.quiet();
-  expect(await otherSkill("alpha").text()).toBe("alpha v2\n");
-  expect(await otherSkill("beta").text()).toBe("beta v1\n");
+  expect(await otherFile("alpha").text()).toBe("alpha v2\n");
 });
 
-test("adopts skills from both sides on a first sync", async () => {
-  await Bun.write(localSkill("beta"), "beta v1\n");
-  await pushFromOther("gamma", "gamma v1\n");
+test("pushes a newly selected skill", async () => {
+  await selectSkill("beta");
+  await Bun.write(localFile("beta"), "beta v1\n");
 
-  const record = await runSync(config);
+  expect(await runSync(config)).toMatchObject({ status: "ok" });
 
-  expect(record).toMatchObject({ status: "ok" });
-  expect(await localSkill("gamma").text()).toBe("gamma v1\n");
   await $`git -C ${other} pull --ff-only`.quiet();
-  expect(await otherSkill("beta").text()).toBe("beta v1\n");
+  expect(await otherFile("beta").text()).toBe("beta v1\n");
 });
 
-test("brings remote skill changes into the local skills directory", async () => {
+test("leaves skills the repo has but this machine does not sync", async () => {
   await pushFromOther("gamma", "gamma v1\n");
 
-  const record = await runSync(config);
+  expect(await runSync(config)).toMatchObject({ status: "ok" });
 
-  expect(record).toMatchObject({ status: "ok" });
-  expect(await localSkill("gamma").text()).toBe("gamma v1\n");
-  expect(await readdir(config.backupsDir)).toHaveLength(1);
+  await $`git -C ${other} pull --ff-only`.quiet();
+  expect(await otherFile("gamma").text()).toBe("gamma v1\n");
 });
 
-test("merges edits made on both sides since the last sync", async () => {
+test("merges commits made to the repo elsewhere", async () => {
   await runSync(config);
-  await Bun.write(localSkill("beta"), "beta v1\n");
+  await Bun.write(localFile("alpha"), "alpha v2\n");
   await pushFromOther("gamma", "gamma v1\n");
 
   const record = await runSync(config);
 
   expect(record).toMatchObject({ status: "ok" });
-  expect(await localSkill("gamma").text()).toBe("gamma v1\n");
+  expect(record.summary).toContain("merged 1 commit from origin");
   await $`git -C ${other} pull --ff-only`.quiet();
-  expect(await otherSkill("beta").text()).toBe("beta v1\n");
+  expect(await otherFile("alpha").text()).toBe("alpha v2\n");
 });
 
-test("refuses the first sync when the same skill differs on both sides", async () => {
-  await Bun.write(localSkill("alpha"), "local edit\n");
+test("refuses the first sync when a selected skill differs on both sides", async () => {
+  await Bun.write(localFile("alpha"), "local edit\n");
   await pushFromOther("alpha", "remote edit\n");
 
   const record = await runSync(config);
 
   expect(record).toMatchObject({ status: "diverged", commit: null });
   expect(record.summary).toContain("alpha/SKILL.md");
-  expect(await localSkill("alpha").text()).toBe("local edit\n");
+  expect(await localFile("alpha").text()).toBe("local edit\n");
+});
+
+test("refuses the first sync when pushing would delete a file from the repo", async () => {
+  await pushFromOther("alpha", "extra\n", "reference.md");
+
+  const record = await runSync(config);
+
+  expect(record).toMatchObject({ status: "diverged" });
+  expect(record.summary).toContain("alpha/reference.md");
+  await $`git -C ${other} pull --ff-only`.quiet();
+  expect(await otherFile("alpha", "reference.md").exists()).toBe(true);
 });
 
 test("keeps refusing a diverged first sync, leaving the remote intact", async () => {
-  await Bun.write(localSkill("alpha"), "local edit\n");
+  await Bun.write(localFile("alpha"), "local edit\n");
   await pushFromOther("alpha", "remote edit\n");
 
   expect(await runSync(config)).toMatchObject({ status: "diverged" });
@@ -126,34 +142,35 @@ test("keeps refusing a diverged first sync, leaving the remote intact", async ()
   expect(await runSync(config)).toMatchObject({ status: "diverged" });
 
   await $`git -C ${other} pull --ff-only`.quiet();
-  expect(await otherSkill("alpha").text()).toBe("remote edit\n");
+  expect(await otherFile("alpha").text()).toBe("remote edit\n");
 });
 
-test("reports a conflict and leaves the local skills directory untouched", async () => {
+test("reports a conflict and leaves the local skill untouched", async () => {
   await runSync(config);
-  await Bun.write(localSkill("alpha"), "local edit\n");
+  await Bun.write(localFile("alpha"), "local edit\n");
   await pushFromOther("alpha", "remote edit\n");
 
   const record = await runSync(config);
 
   expect(record).toMatchObject({ status: "conflict", commit: null });
   expect(record.summary).toContain("skills/alpha/SKILL.md");
-  expect(await localSkill("alpha").text()).toBe("local edit\n");
+  expect(await localFile("alpha").text()).toBe("local edit\n");
 });
 
-test("propagates a locally deleted skill once a base sync exists", async () => {
+test("propagates a file deleted from a skill once a base sync exists", async () => {
+  await Bun.write(localFile("alpha", "reference.md"), "notes\n");
   await runSync(config);
-  await rm(join(config.skillsDir, "alpha"), { recursive: true });
+  await rm(join(skillsHome, "alpha", "reference.md"));
 
   expect(await runSync(config)).toMatchObject({ status: "ok" });
 
   await $`git -C ${other} pull --ff-only`.quiet();
-  expect(await otherSkill("alpha").exists()).toBe(false);
+  expect(await otherFile("alpha", "reference.md").exists()).toBe(false);
 });
 
 test("treats a timestamp-only difference as in sync", async () => {
   const backdated = new Date("2020-01-01T00:00:00Z");
-  await utimes(join(config.skillsDir, "alpha", "SKILL.md"), backdated, backdated);
+  await utimes(join(skillsHome, "alpha", "SKILL.md"), backdated, backdated);
 
   expect(await runSync(config)).toMatchObject({ status: "ok" });
 });
@@ -182,8 +199,18 @@ test("reports git's own reason when a command fails", async () => {
   expect(record.summary).toContain("does not exist");
 });
 
-test("reports a missing skills directory instead of syncing", async () => {
-  await rm(config.skillsDir, { recursive: true });
+test("reports a skill that is no longer where it was selected from", async () => {
+  await rm(join(skillsHome, "alpha"), { recursive: true });
 
-  expect(await runSync(config)).toMatchObject({ status: "error" });
+  const record = await runSync(config);
+
+  expect(record).toMatchObject({ status: "error" });
+  expect(record.summary).toContain("alpha");
+});
+
+test("reports having nothing selected to sync", async () => {
+  const record = await runSync({ ...config, skills: [] });
+
+  expect(record).toMatchObject({ status: "error" });
+  expect(record.summary).toContain("no skills selected");
 });
