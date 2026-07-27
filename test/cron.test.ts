@@ -3,7 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/config.ts";
-import { cronExpression, formatTimeOfDay, nextRun, readSchedule, TimeOfDay } from "../src/cron.ts";
+import {
+  cronExpression,
+  formatSchedule,
+  formatTimeOfDay,
+  nextRun,
+  readSchedule,
+  TimeOfDay,
+} from "../src/cron.ts";
 
 test.each([
   ["03:00", { hour: 3, minute: 0 }],
@@ -30,10 +37,20 @@ test("formats a time of day back into HH:MM", () => {
 });
 
 test.each([
-  [{ hour: 3, minute: 0 }, "0 3 * * *"],
-  [{ hour: 15, minute: 30 }, "30 15 * * *"],
-])("turns %o into a daily cron expression", (time, expected) => {
-  expect(cronExpression(time)).toBe(expected);
+  [{ hour: 3, minute: 0, day: null }, "0 3 * * *"],
+  [{ hour: 15, minute: 30, day: null }, "30 15 * * *"],
+  [{ hour: 3, minute: 0, day: 1 }, "0 3 * * 1"],
+  [{ hour: 23, minute: 45, day: 0 }, "45 23 * * 0"],
+])("turns %o into a cron expression", (schedule, expected) => {
+  expect(cronExpression(schedule)).toBe(expected);
+});
+
+test.each([
+  [null, "Every day at 03:05"],
+  [1, "Mondays at 03:05"],
+  [0, "Sundays at 03:05"],
+])("describes day %p as a schedule", (day, expected) => {
+  expect(formatSchedule({ hour: 3, minute: 5, day })).toBe(expected);
 });
 
 test("reads back the recorded schedule", async () => {
@@ -42,12 +59,15 @@ test("reads back the recorded schedule", async () => {
 
   expect(await readSchedule(config)).toBeNull();
 
-  // A schedule written before pausing existed is running, not paused.
+  // A schedule written before days and pausing existed runs daily, unpaused.
   await Bun.write(config.schedulePath, JSON.stringify({ hour: 3, minute: 30 }));
-  expect(await readSchedule(config)).toEqual({ hour: 3, minute: 30, paused: false });
+  expect(await readSchedule(config)).toEqual({ hour: 3, minute: 30, day: null, paused: false });
 
-  await Bun.write(config.schedulePath, JSON.stringify({ hour: 3, minute: 30, paused: true }));
-  expect(await readSchedule(config)).toEqual({ hour: 3, minute: 30, paused: true });
+  await Bun.write(
+    config.schedulePath,
+    JSON.stringify({ hour: 3, minute: 30, day: 2, paused: true }),
+  );
+  expect(await readSchedule(config)).toEqual({ hour: 3, minute: 30, day: 2, paused: true });
 
   await Bun.write(config.schedulePath, "not json");
   expect(await readSchedule(config)).toBeNull();
@@ -55,12 +75,28 @@ test("reads back the recorded schedule", async () => {
   await rm(stateDir, { recursive: true, force: true });
 });
 
-test("next run is today when the time is still ahead", () => {
+test("next daily run is today when the time is still ahead", () => {
   const now = new Date("2026-07-27T01:00:00");
-  expect(nextRun({ hour: 3, minute: 0 }, now)).toEqual(new Date("2026-07-27T03:00:00"));
+  expect(nextRun({ hour: 3, minute: 0, day: null }, now)).toEqual(new Date("2026-07-27T03:00:00"));
 });
 
-test("next run rolls to tomorrow once the time has passed", () => {
+test("next daily run rolls to tomorrow once the time has passed", () => {
   const now = new Date("2026-07-27T04:00:00");
-  expect(nextRun({ hour: 3, minute: 0 }, now)).toEqual(new Date("2026-07-28T03:00:00"));
+  expect(nextRun({ hour: 3, minute: 0, day: null }, now)).toEqual(new Date("2026-07-28T03:00:00"));
+});
+
+test("next weekly run is later this week when the day is still ahead", () => {
+  // 2026-07-27 is a Monday, so Thursday is three days out.
+  const now = new Date("2026-07-27T04:00:00");
+  expect(nextRun({ hour: 3, minute: 0, day: 4 }, now)).toEqual(new Date("2026-07-30T03:00:00"));
+});
+
+test("next weekly run is today when the day matches and the time is ahead", () => {
+  const now = new Date("2026-07-27T01:00:00");
+  expect(nextRun({ hour: 3, minute: 0, day: 1 }, now)).toEqual(new Date("2026-07-27T03:00:00"));
+});
+
+test("next weekly run rolls a week on once the day has passed", () => {
+  const now = new Date("2026-07-27T04:00:00");
+  expect(nextRun({ hour: 3, minute: 0, day: 1 }, now)).toEqual(new Date("2026-08-03T03:00:00"));
 });

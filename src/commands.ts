@@ -4,17 +4,18 @@ import { defineCommand, option, type PromptApi } from "@bunli/core";
 import { z } from "zod";
 import { loadConfig, missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
 import { assertGhReady, createRepo, listRepos } from "./github.ts";
-import { pickRepo, pickSkills } from "./onboarding.ts";
+import { pickRepo, pickSchedule, pickSkills } from "./onboarding.ts";
 import { discoverSkills, githubSlug, groupSkills, repoDirName, sshUrl } from "./skills.ts";
 import {
   formatTimeOfDay,
   installSchedule,
   isRegistered,
-  MIDNIGHT,
+  EVERY_DAY_AT_MIDNIGHT,
+  formatSchedule,
   nextRun,
   pauseSchedule,
   readSchedule,
-  TimeOfDay,
+  type Schedule,
 } from "./cron.ts";
 import { readLastSync } from "./state.ts";
 import { runSync } from "./sync.ts";
@@ -28,11 +29,6 @@ const formatDateTime = (date: Date) =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
   `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 
-const atOption = option(TimeOfDay.optional(), {
-  short: "a",
-  description: "Time of day to sync — 00:00, 3am, 3:30pm (default midnight)",
-});
-
 const repoOption = option(z.string().trim().min(1).optional(), {
   short: "r",
   description: "git remote URL of the skills repo",
@@ -40,23 +36,23 @@ const repoOption = option(z.string().trim().min(1).optional(), {
 
 export const setup = defineCommand({
   name: "setup",
-  description: "Pick the skills to sync and the repo to sync them to, then schedule it",
-  options: { at: atOption, repo: repoOption },
+  description: "Pick the skills to sync, the repo to sync them to, and when",
+  options: { repo: repoOption },
   async handler({ flags, prompt, terminal }) {
-    const config = await configure(prompt, terminal.isInteractive, {
+    const existing = await readSchedule(await loadConfig());
+    const { config, schedule } = await configure(prompt, terminal.isInteractive, {
       repo: flags.repo,
       // Running setup again is how the configuration is changed, so always ask.
       edit: true,
+      schedule: existing ?? undefined,
     });
 
-    // Keep the time already scheduled unless a new one was asked for.
-    const time = flags.at ?? (await readSchedule(config)) ?? MIDNIGHT;
-    await installSchedule(time, config);
+    await installSchedule(schedule, config);
     prompt.note(
       [
         `${config.skills.map((skill) => skill.name).join(SEPARATOR)}`,
         `${ARROW} ${config.repo} (${config.branch})`,
-        announce("Scheduled", time),
+        announce("Scheduled", schedule),
       ].join("\n"),
       "skill-sync",
     );
@@ -69,12 +65,14 @@ export const start = defineCommand({
   description: "Resume the nightly sync after a stop, running setup when unconfigured",
   async handler({ prompt, terminal }) {
     // Resuming leaves the configuration as it is; `setup` is where it changes.
-    const config = await configure(prompt, terminal.isInteractive, { edit: false });
-    const existing = await readSchedule(config);
-    const time = existing ?? MIDNIGHT;
+    const existing = await readSchedule(await loadConfig());
+    const { config, schedule } = await configure(prompt, terminal.isInteractive, {
+      edit: false,
+      schedule: existing ?? undefined,
+    });
 
-    await installSchedule(time, config);
-    console.log(mark("ok", announce(existing ? "Resumed" : "Scheduled", time)));
+    await installSchedule(schedule, config);
+    console.log(mark("ok", announce(existing ? "Resumed" : "Scheduled", schedule)));
   },
 });
 
@@ -118,7 +116,7 @@ export const status = defineCommand({
       [
         "schedule",
         schedule
-          ? `${formatTimeOfDay(schedule)} daily${schedule.paused ? ` ${PAUSED} paused` : ""}`
+          ? `${formatSchedule(schedule)}${schedule.paused ? ` ${PAUSED} paused` : ""}`
           : "not scheduled",
       ],
       ["next run", active ? formatDateTime(nextRun(schedule)) : "—"],
@@ -172,9 +170,8 @@ export const sync = defineCommand({
   },
 });
 
-const announce = (verb: string, time: TimeOfDay) =>
-  `${verb} nightly sync at ${formatTimeOfDay(time)} ` +
-  `(next run ${formatDateTime(nextRun(time))})`;
+const announce = (verb: string, schedule: Schedule) =>
+  `${verb} ${formatSchedule(schedule)} (next run ${formatDateTime(nextRun(schedule))})`;
 
 /**
  * Picks the skills and the repo. `setup` runs this every time, with what is already
@@ -184,16 +181,17 @@ const announce = (verb: string, time: TimeOfDay) =>
 async function configure(
   prompt: PromptApi,
   interactive: boolean,
-  { repo, edit }: { repo?: string; edit: boolean },
+  { repo, edit, schedule }: { repo?: string; edit: boolean; schedule?: Schedule },
 ) {
   const config = await loadConfig();
   const configured = config.repo !== undefined && config.skills.length > 0;
-  if (configured && !edit) return config;
+  const keep = { config, schedule: schedule ?? EVERY_DAY_AT_MIDNIGHT };
+  if (configured && !edit) return keep;
 
   if (!interactive) {
-    // Rescheduling an already configured machine asks nothing, so it still works
-    // without a terminal; changing what is synced does not.
-    if (configured && repo === undefined) return config;
+    // A configured machine can still be re-registered without a terminal, since
+    // that asks nothing; changing what is synced, or when, does.
+    if (configured && repo === undefined) return keep;
 
     console.error(
       configured
@@ -211,7 +209,12 @@ async function configure(
   }
 
   const skills = await pickSkills(prompt, available, config.skills);
-  return await save(config, { repo: repo ?? (await resolveRepo(prompt, config.repo)), skills });
+  const chosen = repo ?? (await resolveRepo(prompt, config.repo));
+
+  return {
+    config: await save(config, { repo: chosen, skills }),
+    schedule: await pickSchedule(prompt, schedule),
+  };
 }
 
 /** Lists the user's repos through `gh` — no OAuth flow of our own — and creates on request. */

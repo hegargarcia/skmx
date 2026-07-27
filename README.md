@@ -35,6 +35,20 @@ It then lists your repos through the `gh` CLI — including an option to create 
 and asks where the skills should live. There is no OAuth flow of its own; `gh` holds
 the credentials.
 
+Last it asks when to sync: the day first, then the time.
+
+```
+? Which day should the skills sync?
+> Every day (nightly)
+  Mondays
+  …
+
+? What time? 00:00
+```
+
+The defaults are **every day at 00:00**. The time accepts 24-hour `HH:MM` and
+12-hour `3am` / `3:30pm`, and is checked before it is accepted.
+
 Both answers are written to `~/.config/skill-sync/config.json`, which lives outside
 the checkout so the CLI behaves the same wherever you run it from.
 
@@ -65,25 +79,25 @@ bun src/index.ts sync          # sync now
 bun src/index.ts --help        # also --version, and --help on any command
 ```
 
-`setup` takes `--at` for the time of day and `--repo` to skip the repo picker:
+`setup` takes `--repo` to skip the repo picker:
 
 ```bash
-bun src/index.ts setup --repo git@github.com:you/skills.git --at 3:30am
+bun src/index.ts setup --repo git@github.com:you/skills.git
 ```
 
-`--at` accepts 24-hour `HH:MM` and 12-hour `3am` / `3:30pm`, and **defaults to
-midnight** on a first setup. Leaving it out later keeps the time already scheduled.
-
 **Run `setup` again to change any of it.** It asks the same questions with your
-current answers filled in — the skills you sync are ticked, and the repo you are using
-is selected and hinted `in use` — so it doubles as the edit screen. Picking skills
-needs a terminal, so `setup` refuses to do that non-interactively rather than
-guessing; `setup --at 5am` on an already configured machine asks nothing and works
-from a script.
+current answers filled in — the skills you sync are ticked, the repo you are using is
+selected and hinted `in use`, and the day and time start on what is already
+scheduled — so it doubles as the edit screen.
 
-`stop` is a pause: it unregisters the job but keeps the time on record, so `start`
-puts it back where it was. `start` on an unconfigured machine falls back to
-onboarding, and with a repo but no schedule it registers one at midnight.
+Every question needs a terminal, so `setup` refuses to run non-interactively rather
+than guessing. On an already configured machine it asks nothing and simply
+re-registers the existing schedule, which is what makes it safe to call from a
+script.
+
+`stop` is a pause: it unregisters the job but keeps the day and time on record, so
+`start` puts it back where it was. `start` on an unconfigured machine falls back to
+onboarding, and with a repo but no schedule it registers every day at midnight.
 
 `status` exits non-zero whenever the sync is not going to run as intended — never
 set up, missing from the OS scheduler, a failed or conflicted last run, or no

@@ -32,23 +32,46 @@ export const TimeOfDay = z.string().trim().transform((raw, ctx) => {
 
 export type TimeOfDay = z.output<typeof TimeOfDay>;
 
-/** `paused` keeps the time on record after `stop`, so `start` can resume it. */
+/**
+ * When the sync runs. `day` follows cron's day-of-week numbering, 0 being Sunday, and
+ * is null for every day. `paused` keeps the schedule on record after `stop`, so
+ * `start` can resume it.
+ */
 const ScheduleSchema = z.object({
   hour: z.number().int().min(0).max(23),
   minute: z.number().int().min(0).max(59),
+  day: z.number().int().min(0).max(6).nullable().default(null),
   paused: z.boolean().default(false),
 });
+
+export type Schedule = { hour: number; minute: number; day: number | null };
+
+export const EVERY_DAY_AT_MIDNIGHT: Schedule = { hour: 0, minute: 0, day: null };
+
+const DAY_NAMES = [
+  "Sundays",
+  "Mondays",
+  "Tuesdays",
+  "Wednesdays",
+  "Thursdays",
+  "Fridays",
+  "Saturdays",
+] as const;
+
+export const dayName = (day: number | null) => (day === null ? "Every day" : DAY_NAMES[day]!);
+
+export const formatSchedule = (schedule: Schedule) =>
+  `${dayName(schedule.day)} at ${formatTimeOfDay(schedule)}`;
 
 export const formatTimeOfDay = ({ hour, minute }: TimeOfDay) =>
   `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 
-export const cronExpression = ({ hour, minute }: TimeOfDay) => `${minute} ${hour} * * *`;
+export const cronExpression = ({ hour, minute, day }: Schedule) =>
+  `${minute} ${hour} * * ${day ?? "*"}`;
 
-export const MIDNIGHT = { hour: 0, minute: 0 } as const;
-
-export async function installSchedule(time: TimeOfDay, config: Config) {
-  await Bun.cron(JOB_MODULE, cronExpression(time), TITLE);
-  await writeSchedule(config, time, false);
+export async function installSchedule(schedule: Schedule, config: Config) {
+  await Bun.cron(JOB_MODULE, cronExpression(schedule), TITLE);
+  await writeSchedule(config, schedule, false);
 }
 
 /** Unregisters the job but keeps the time, so `start` can put it back. */
@@ -61,8 +84,11 @@ export async function pauseSchedule(config: Config) {
   return true;
 }
 
-const writeSchedule = ({ schedulePath }: Config, { hour, minute }: TimeOfDay, paused: boolean) =>
-  Bun.write(schedulePath, `${JSON.stringify({ hour, minute, paused })}\n`);
+const writeSchedule = (
+  { schedulePath }: Config,
+  { hour, minute, day }: Schedule,
+  paused: boolean,
+) => Bun.write(schedulePath, `${JSON.stringify({ hour, minute, day, paused })}\n`);
 
 /** The time of day the sync was registered for, or null when it is not scheduled. */
 export async function readSchedule(config: Config) {
@@ -89,9 +115,16 @@ export async function isRegistered() {
  * The next local time the schedule fires. Bun.cron.parse resolves expressions in
  * UTC while the OS scheduler fires in local time, so this stays hand-rolled.
  */
-export function nextRun(time: TimeOfDay, now = new Date()) {
+export function nextRun(schedule: Schedule, now = new Date()) {
   const next = new Date(now);
-  next.setHours(time.hour, time.minute, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
+  next.setHours(schedule.hour, schedule.minute, 0, 0);
+
+  if (schedule.day === null) {
+    if (next <= now) next.setDate(next.getDate() + 1);
+    return next;
+  }
+
+  next.setDate(next.getDate() + ((schedule.day - next.getDay() + 7) % 7));
+  if (next <= now) next.setDate(next.getDate() + 7);
   return next;
 }
