@@ -75,9 +75,9 @@ test.each([
   ["0 9 * *", "five-field"],
   ["0 9 1 * *", "day-of-month and month"],
   ["0 9 * JAN *", "day-of-month and month"],
-  ["60 9 * * *", "minute or hour"],
-  ["0 24 * * *", "minute or hour"],
-  ["*/15 * * * *", "minute or hour"],
+  ["60 9 * * *", "minute of 0-59 and an hour of 0-23"],
+  ["0 24 * * *", "minute of 0-59 and an hour of 0-23"],
+  ["*/15 * * * *", "steps like */15 are only supported for the day of week"],
   ["0 9 * * 8", "day of week"],
   ["0 9 * * MON", "day of week"],
 ])("refuses %p rather than scheduling something else", (expression, reason) => {

@@ -45,23 +45,31 @@ const repoOption = option(
     .min(1)
     .transform((repo) => (/^[\w.-]+\/[\w.-]+$/.test(repo) ? sshUrl(repo) : repo))
     .optional(),
-  { short: "r", description: "Skills repo as owner/name or a git URL" },
+  {
+    short: "r",
+    description:
+      "The repo to sync the skills to, as owner/name or any git URL. Answering this skips the repo picker.",
+  },
 );
 
 const skillOption = option(z.array(z.string().trim().min(1)).optional(), {
   short: "s",
   repeatable: true,
-  description: "Path to a skill to sync; repeat for more",
+  description:
+    "Path to a skill folder to sync, which has to hold a SKILL.md. Repeat the flag for each skill. Answering this skips the skill picker.",
 });
 
 const cronOption = option(CronExpression.optional(), {
   short: "c",
-  description: 'When to sync, as cron — "0 9 * * 1-5"',
+  // The renderer wraps this under the flag column, so it reads as a paragraph.
+  description:
+    'When to sync, as a cron expression such as "0 9 * * 1-5". Only the part a schedule can hold is accepted: a minute, an hour, and days of the week as *, a list like 1,3,5 or a range like 1-5. Day-of-month and month have to be *, and steps such as */15 are refused, because status could not then describe the schedule the machine is keeping. Answering this skips the schedule questions.',
 });
 
 export const setup = defineCommand({
   name: "setup",
-  description: "Pick the skills to sync, the repo to sync them to, and when",
+  // The renderer prints this unwrapped, so it stays inside a narrow terminal.
+  description: "Pick the skills, the repo and when — or pass every flag to skip the questions",
   options: { repo: repoOption, skill: skillOption, cron: cronOption },
   async handler({ flags, prompt, terminal }) {
     const existing = await readSchedule(await loadConfig());

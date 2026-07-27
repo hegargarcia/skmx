@@ -99,24 +99,37 @@ export const formatTimeOfDay = ({ hour, minute }: TimeOfDay) =>
  */
 export const CronExpression = z.string().trim().transform((raw, ctx): Schedule => {
   const reject = (message: string) => {
-    ctx.addIssue({ code: "custom", message: `${message} — expected "minute hour * * day-of-week"` });
+    ctx.addIssue({ code: "custom", message });
     return z.NEVER;
   };
 
   const fields = raw.split(/\s+/);
-  if (fields.length !== 5) return reject(`"${raw}" is not a five-field cron expression`);
+  if (fields.length !== 5) {
+    return reject(`"${raw}" is not a five-field cron expression like "0 9 * * 1-5"`);
+  }
 
   const [minuteField = "", hourField = "", dayOfMonth, month, dayOfWeek = ""] = fields;
   if (dayOfMonth !== "*" || month !== "*") {
-    return reject("day-of-month and month have to be *");
+    return reject('day-of-month and month have to be * — the shape is "minute hour * * day-of-week"');
   }
 
   const minute = wholeNumber(minuteField, 59);
   const hour = wholeNumber(hourField, 23);
-  if (minute === null || hour === null) return reject(`"${raw}" has a minute or hour out of range`);
+  if (minute === null || hour === null) {
+    return reject(
+      /^\d+$/.test(minuteField) && /^\d+$/.test(hourField)
+        ? `"${raw}" needs a minute of 0-59 and an hour of 0-23`
+        : `"${raw}" needs a plain minute and hour — lists, ranges and steps like */15 are only ` +
+            "supported for the day of week",
+    );
+  }
 
   const days = dayOfWeek === "*" ? [...ALL_DAYS] : weekdays(dayOfWeek);
-  if (days === null) return reject(`"${raw}" has a day of week that is not 0-7 or a range`);
+  if (days === null) {
+    return reject(
+      `"${raw}" needs a day of week that is *, a number from 0-7, a list like 1,3,5 or a range like 1-5`,
+    );
+  }
 
   return { hour, minute, days };
 });
