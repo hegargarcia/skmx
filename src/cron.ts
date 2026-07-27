@@ -1,4 +1,3 @@
-import { rm } from "node:fs/promises";
 import { $ } from "bun";
 import { z } from "zod";
 import type { Config } from "./config.ts";
@@ -33,9 +32,11 @@ export const TimeOfDay = z.string().trim().transform((raw, ctx) => {
 
 export type TimeOfDay = z.output<typeof TimeOfDay>;
 
+/** `paused` keeps the time on record after `stop`, so `start` can resume it. */
 const ScheduleSchema = z.object({
   hour: z.number().int().min(0).max(23),
   minute: z.number().int().min(0).max(59),
+  paused: z.boolean().default(false),
 });
 
 export const formatTimeOfDay = ({ hour, minute }: TimeOfDay) =>
@@ -43,17 +44,25 @@ export const formatTimeOfDay = ({ hour, minute }: TimeOfDay) =>
 
 export const cronExpression = ({ hour, minute }: TimeOfDay) => `${minute} ${hour} * * *`;
 
+export const MIDNIGHT = { hour: 0, minute: 0 } as const;
+
 export async function installSchedule(time: TimeOfDay, config: Config) {
   await Bun.cron(JOB_MODULE, cronExpression(time), TITLE);
-  await Bun.write(config.schedulePath, `${JSON.stringify(time)}\n`);
+  await writeSchedule(config, time, false);
 }
 
-export async function removeSchedule(config: Config) {
-  const scheduled = (await readSchedule(config)) !== null;
+/** Unregisters the job but keeps the time, so `start` can put it back. */
+export async function pauseSchedule(config: Config) {
+  const schedule = await readSchedule(config);
+  if (schedule === null) return false;
+
   await Bun.cron.remove(TITLE);
-  await rm(config.schedulePath, { force: true });
-  return scheduled;
+  await writeSchedule(config, schedule, true);
+  return true;
 }
+
+const writeSchedule = ({ schedulePath }: Config, { hour, minute }: TimeOfDay, paused: boolean) =>
+  Bun.write(schedulePath, `${JSON.stringify({ hour, minute, paused })}\n`);
 
 /** The time of day the sync was registered for, or null when it is not scheduled. */
 export async function readSchedule(config: Config) {

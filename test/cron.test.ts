@@ -42,8 +42,12 @@ test("reads back the recorded schedule", async () => {
 
   expect(await readSchedule(config)).toBeNull();
 
+  // A schedule written before pausing existed is running, not paused.
   await Bun.write(config.schedulePath, JSON.stringify({ hour: 3, minute: 30 }));
-  expect(await readSchedule(config)).toEqual({ hour: 3, minute: 30 });
+  expect(await readSchedule(config)).toEqual({ hour: 3, minute: 30, paused: false });
+
+  await Bun.write(config.schedulePath, JSON.stringify({ hour: 3, minute: 30, paused: true }));
+  expect(await readSchedule(config)).toEqual({ hour: 3, minute: 30, paused: true });
 
   await Bun.write(config.schedulePath, "not json");
   expect(await readSchedule(config)).toBeNull();
