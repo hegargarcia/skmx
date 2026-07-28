@@ -30,6 +30,9 @@ async function selectSkill(name: string) {
 }
 
 async function pushFromOther(skill: string, body: string, file = "SKILL.md") {
+  // The other machine catches up first, as it would in life: skill-sync itself pushes
+  // commits of its own, so this clone is usually behind by the time it is used.
+  await $`git -C ${other} pull --ff-only`.nothrow().quiet();
   await Bun.write(otherFile(skill, file), body);
   await $`git -C ${other} add -A`.quiet();
   await $`git ${GIT_ID} -C ${other} commit -m ${`edit ${skill}`}`.quiet();
@@ -149,33 +152,62 @@ test("keeps refusing a diverged first sync, leaving the remote intact", async ()
   expect(await otherFile("alpha").text()).toBe("remote edit\n");
 });
 
-test("reports a conflict and leaves the local skill untouched", async () => {
+test("keeps rules added on two machines instead of stopping on them", async () => {
   await runSync(config);
-  await Bun.write(localFile("alpha"), "local edit\n");
-  await pushFromOther("alpha", "remote edit\n");
+  await Bun.write(localFile("alpha"), "alpha v1\n- rule from here\n");
+  await pushFromOther("alpha", "alpha v1\n- rule from the other machine\n");
+
+  const record = await runSync(config);
+
+  expect(record).toMatchObject({ status: "ok" });
+  const merged = await localFile("alpha").text();
+  expect(merged).toContain("- rule from here");
+  expect(merged).toContain("- rule from the other machine");
+});
+
+test("still reports a conflict for a file union cannot merge", async () => {
+  await runSync(config);
+  await Bun.write(localFile("alpha", "settings.json"), '{ "from": "here" }\n');
+  await runSync(config);
+  await Bun.write(localFile("alpha", "settings.json"), '{ "from": "here, edited" }\n');
+  await pushFromOther("alpha", '{ "from": "the other machine" }\n', "settings.json");
 
   const record = await runSync(config);
 
   expect(record).toMatchObject({ status: "conflict", commit: null });
-  expect(record.summary).toContain("skills/alpha/SKILL.md");
-  expect(await localFile("alpha").text()).toBe("local edit\n");
+  expect(record.summary).toContain("skills/alpha/settings.json");
   // The merge is aborted, so the way out is to run it again by hand — say so.
   expect(record.summary).toContain("git merge origin/main");
 });
 
 test("no agent ever sees conflict markers in a skill", async () => {
   await runSync(config);
-  await Bun.write(localFile("alpha"), "local edit\n");
-  await pushFromOther("alpha", "remote edit\n");
+  await Bun.write(localFile("alpha", "settings.json"), '{ "from": "here" }\n');
+  await runSync(config);
+  await Bun.write(localFile("alpha", "settings.json"), '{ "from": "here, edited" }\n');
+  await pushFromOther("alpha", '{ "from": "the other machine" }\n', "settings.json");
 
   expect(await runSync(config)).toMatchObject({ status: "conflict" });
 
   for (const agent of [".claude", ".agents", ".codex"]) {
-    const text = await Bun.file(
-      join(config.agentHome, agent, "skills", "alpha", "SKILL.md"),
-    ).text();
-    expect(text).not.toContain("<<<<<<<");
+    for (const file of ["SKILL.md", "settings.json"]) {
+      const text = await Bun.file(join(config.agentHome, agent, "skills", "alpha", file)).text();
+      expect(text).not.toContain("<<<<<<<");
+    }
   }
+});
+
+test("adds the union attribute once, keeping what the repo already had", async () => {
+  const attributes = join(config.reposDir, "remote", ".gitattributes");
+  await runSync(config);
+
+  expect(await Bun.file(attributes).text()).toContain("skills/**/*.md merge=union");
+
+  await Bun.write(localFile("alpha"), "alpha v2\n");
+  await runSync(config);
+  const lines = (await Bun.file(attributes).text()).split("\n");
+
+  expect(lines.filter((line) => line.includes("merge=union"))).toHaveLength(1);
 });
 
 test("takes the other machine's work and retries when a push is refused once", async () => {

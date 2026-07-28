@@ -25,6 +25,16 @@ const FALLBACK_AUTHOR = ["user.name=skill-sync", "user.email=skill-sync@localhos
 const BASE_REF = "refs/skill-sync/base";
 
 /**
+ * Skills are lists of rules that grow at the end, so two machines each adding one
+ * both change the last line — the same region, which git stops on by default. The
+ * union driver keeps both sides' lines instead, which is what was wanted every time.
+ *
+ * It applies to markdown under `skills/` only: anything else in a skill still stops
+ * for a human, because keeping both halves of a JSON file is never right.
+ */
+const UNION_ATTRIBUTE = "skills/**/*.md merge=union";
+
+/**
  * `--checksum` because rsync's default size-and-mtime check calls two same-sized
  * edits within the same second identical, which would drop a skill edit.
  */
@@ -87,6 +97,10 @@ async function performSync(config: Config) {
     await git.clean(CleanOptions.FORCE + CleanOptions.RECURSIVE);
   }
 
+  // Committed before the merge below, so the driver is in force for it. Once one
+  // machine has done this, every other machine gets it from the repo.
+  const taught = await ensureUnionMerge(git, clonePath);
+
   // Decide everything before copying anything, so one unreconciled skill cannot
   // leave the others half imported.
   const plans = await Promise.all(
@@ -133,6 +147,7 @@ async function performSync(config: Config) {
   const head = await git.revparse(["--short", "HEAD"]);
 
   const changes = [
+    taught && "set the repo to merge skill markdown by keeping both sides",
     committed && "committed local edits",
     incoming > 0 && `merged ${plural(incoming, "commit")} from origin`,
     outgoing > 0 && `pushed ${plural(outgoing, "commit")}`,
@@ -200,6 +215,20 @@ async function refExists(git: SimpleGit, ref: string) {
     .revparse(["--verify", "--quiet", ref])
     .then((sha) => sha.trim() !== "")
     .catch(() => false);
+}
+
+/** Adds the union attribute to the repo, once, keeping anything already in the file. */
+async function ensureUnionMerge(git: SimpleGit, clonePath: string) {
+  const path = join(clonePath, ".gitattributes");
+  const file = Bun.file(path);
+  const existing = (await file.exists()) ? await file.text() : "";
+  if (existing.split("\n").some((line) => line.trim() === UNION_ATTRIBUTE)) return false;
+
+  const gap = existing === "" || existing.endsWith("\n") ? "" : "\n";
+  await Bun.write(path, `${existing}${gap}${UNION_ATTRIBUTE}\n`);
+  await git.add([".gitattributes"]);
+  await git.commit("chore: merge skill markdown by keeping both sides");
+  return true;
 }
 
 async function commitLocalEdits(git: SimpleGit) {

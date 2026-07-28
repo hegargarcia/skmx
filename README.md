@@ -175,6 +175,18 @@ The clone stays parked on the commit of the last successful sync, marked by the
 `refs/skill-sync/base` ref. That commit is the common ancestor, so commits made to
 the repo from another machine are merged rather than overwritten.
 
+- **Rules added on two machines are both kept.** Skills grow at the end, so two
+  machines each appending a rule change the same line and git would normally stop for
+  a human. The repo therefore carries `skills/**/*.md merge=union`, which tells git to
+  keep both sides' lines. skill-sync adds that line on its first sync, keeping anything
+  the file already had, and every other machine then gets it from the repo.
+
+  The trade is that union never asks. Two machines *rewording the same rule* end up
+  with both wordings, and two machines editing a skill's frontmatter can produce a
+  duplicated key — git reports success either way, so glance at a skill after a busy
+  day on two machines. It applies to markdown under `skills/` only; anything else in a
+  skill still stops for a human, because keeping both halves of a JSON file is never
+  right.
 - **A merge conflict stops the sync.** Nothing is pushed, local skills are left as
   they are, and `status` reports the conflicting paths. The merge is *aborted* rather
   than left in place, because every agent reads this clone through a link and none of
@@ -207,9 +219,10 @@ the same repo. Syncing **every hour** is what makes this work: conflicts need tw
 machines to change the same lines *between* syncs, so a shorter gap means far fewer of
 them. The per-machine minute keeps them from arriving together.
 
-When two machines do change the same lines, the second one to sync reports a conflict
-and stops, keeping its own copy, until the merge above is done. Everything that did
-not clash still syncs.
+Two machines adding rules to the same skill is the ordinary case, and union merging
+absorbs it without asking. What is left over — the same rule reworded on both, or a
+non-markdown file changed on both — reports a conflict and stops, keeping this
+machine's copy, until the merge above is done.
 
 State lives under `${XDG_STATE_HOME:-~/.local/state}/skill-sync`: `state.json`
 holds the last sync record, `schedule.json` the time `start` registered, and
