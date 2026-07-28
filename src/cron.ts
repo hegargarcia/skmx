@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { $ } from "bun";
 import { z } from "zod";
 import type { Config } from "./config.ts";
@@ -54,7 +55,7 @@ export const dayName = (day: number) => DAY_NAMES[day]!;
  */
 const ScheduleSchema = z
   .object({
-    hour: z.number().int().min(0).max(23),
+    hour: z.number().int().min(0).max(23).nullable(),
     minute: z.number().int().min(0).max(59),
     days: z.array(z.number().int().min(0).max(6)).min(1).optional(),
     day: z.number().int().min(0).max(6).nullable().optional(),
@@ -65,9 +66,20 @@ const ScheduleSchema = z
     days: days ?? (day === undefined || day === null ? [...ALL_DAYS] : [day]),
   }));
 
-export type Schedule = { hour: number; minute: number; days: number[] };
+/** A null `hour` means every hour, which is how the sync runs by default. */
+export type Schedule = { hour: number | null; minute: number; days: number[] };
 
-export const EVERY_DAY_AT_MIDNIGHT: Schedule = { hour: 0, minute: 0, days: [...ALL_DAYS] };
+/**
+ * Machines syncing to one repo want to avoid arriving together, so the minute is
+ * derived from the hostname: stable across runs, but different per machine.
+ */
+export const stableMinute = (seed = hostname()) => Number(BigInt(Bun.hash(seed)) % 60n);
+
+export const everyHour = (seed?: string): Schedule => ({
+  hour: null,
+  minute: stableMinute(seed),
+  days: [...ALL_DAYS],
+});
 
 /** Monday first, as the week is read, rather than cron's Sunday-first numbering. */
 const asRead = (days: number[]) => [...days].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
@@ -86,8 +98,15 @@ export const formatDays = (days: number[]) => {
     .join(" · ");
 };
 
-export const formatSchedule = (schedule: Schedule) =>
-  `${formatDays(schedule.days)} at ${formatTimeOfDay(schedule)}`;
+export const formatSchedule = (schedule: Schedule) => {
+  const days = formatDays(schedule.days);
+  if (schedule.hour === null) {
+    const minute = String(schedule.minute).padStart(2, "0");
+    return days === "Every day" ? `Every hour at :${minute}` : `${days}, every hour at :${minute}`;
+  }
+
+  return `${days} at ${formatTimeOfDay({ hour: schedule.hour, minute: schedule.minute })}`;
+};
 
 export const formatTimeOfDay = ({ hour, minute }: TimeOfDay) =>
   `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
@@ -114,13 +133,13 @@ export const CronExpression = z.string().trim().transform((raw, ctx): Schedule =
   }
 
   const minute = wholeNumber(minuteField, 59);
-  const hour = wholeNumber(hourField, 23);
-  if (minute === null || hour === null) {
+  const hour = hourField === "*" ? null : wholeNumber(hourField, 23);
+  if (minute === null || (hour === null && hourField !== "*")) {
     return reject(
       /^\d+$/.test(minuteField) && /^\d+$/.test(hourField)
         ? `"${raw}" needs a minute of 0-59 and an hour of 0-23`
-        : `"${raw}" needs plain numbers for the minute and hour — lists, ranges and steps ` +
-            "like */15 only work for the day of week",
+        : `"${raw}" needs a plain minute, and an hour that is a number or * for every hour — ` +
+            "lists, ranges and steps like */15 only work for the day of week",
     );
   }
 
@@ -156,10 +175,8 @@ function weekdays(field: string) {
 }
 
 export const cronExpression = ({ hour, minute, days }: Schedule) =>
-  `${minute} ${hour} * * ${
-    days.length >= ALL_DAYS.length
-      ? "*"
-      : [...days].sort((a, b) => a - b).join(",")
+  `${minute} ${hour ?? "*"} * * ${
+    days.length >= ALL_DAYS.length ? "*" : [...days].sort((a, b) => a - b).join(",")
   }`;
 
 export async function installSchedule(schedule: Schedule, config: Config) {
@@ -209,9 +226,18 @@ export async function isRegistered() {
  * UTC while the OS scheduler fires in local time, so this stays hand-rolled.
  */
 export function nextRun(schedule: Schedule, now = new Date()) {
+  if (schedule.hour === null) {
+    const next = new Date(now);
+    next.setMinutes(schedule.minute, 0, 0);
+    if (next <= now) next.setHours(next.getHours() + 1);
+    // Walk on an hour at a time until it lands on a day the schedule runs.
+    while (!schedule.days.includes(next.getDay())) next.setHours(next.getHours() + 1);
+    return next;
+  }
+
   const candidates = schedule.days.map((day) => {
     const next = new Date(now);
-    next.setHours(schedule.hour, schedule.minute, 0, 0);
+    next.setHours(schedule.hour!, schedule.minute, 0, 0);
     next.setDate(next.getDate() + ((day - next.getDay() + 7) % 7));
     if (next <= now) next.setDate(next.getDate() + 7);
     return next.getTime();

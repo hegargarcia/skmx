@@ -40,21 +40,23 @@ the way calendars and job monitors ask it:
 
 ```
 ? How often should the skills sync?
-> Every day    nightly
+> Every hour   recommended, keeps machines in step
+  Every day    at a time you choose
   Weekdays     Mon–Fri
   Weekends     Sat & Sun
   Pick days…   choose them one by one
-
-? What time? 09:00 · 00:00 · 21:00
-  00:00
 ```
 
-`Pick days…` opens a checkbox per day, so any set works. The time is typed, with
-three common ones offered; it accepts 24-hour `HH:MM` and 12-hour `3am` / `3:30pm`,
-and is checked before it is accepted. The defaults are **every day at 00:00**.
+**Every hour is the default, and it asks nothing else.** Anything less frequent then
+asks for a time, typed, with three common ones offered; it accepts 24-hour `HH:MM`
+and 12-hour `3am` / `3:30pm`. `Pick days…` opens a checkbox per day.
+
+The hourly minute is derived from the machine's hostname — stable, but different on
+each machine, so several of them syncing to one repo do not all arrive at the same
+moment. `status` shows it as `Every hour at :37`.
 
 Several days become one cron entry: Mondays, Wednesdays and Fridays at 09:00 is
-`0 9 * * 1,3,5`, and `status` reads it back as `Mon · Wed · Fri at 09:00`.
+`0 9 * * 1,3,5`, read back as `Mon · Wed · Fri at 09:00`.
 
 ## Setting up without the prompts
 
@@ -173,8 +175,19 @@ The clone stays parked on the commit of the last successful sync, marked by the
 `refs/skill-sync/base` ref. That commit is the common ancestor, so commits made to
 the repo from another machine are merged rather than overwritten.
 
-- **A merge conflict stops the sync.** Nothing is pushed and `status` reports the
-  conflicting paths. Resolve them in the clone, commit, and sync again.
+- **A merge conflict stops the sync.** Nothing is pushed, local skills are left as
+  they are, and `status` reports the conflicting paths. The merge is *aborted* rather
+  than left in place, because every agent reads this clone through a link and none of
+  them should find conflict markers in a skill. That means the way out is to run the
+  merge again yourself, which the message spells out — editing the file and committing
+  it is **not** enough and leaves the sync conflicted on every later run:
+
+  ```bash
+  cd ~/.config/skill-sync/repos/you/skills
+  git merge origin/main     # now the conflict markers are there
+  # fix the marked files
+  git add -A && git commit
+  ```
 - **A picked folder that is not a link and still differs from the clone** cannot be
   resolved automatically — either side may hold the edit worth keeping. That is
   reported as `diverged` and nothing is changed. This is what you see when a skill
@@ -183,6 +196,20 @@ the repo from another machine are merged rather than overwritten.
   what the clone holds.** Otherwise it has content that was never pushed, so it is
   left alone and named in the summary.
 - **Skills the repo has that you did not select are left alone**, and never linked.
+- **A push that loses a race is retried.** With several machines on one repo, two can
+  push in the same minute; the loser fetches, merges and pushes again rather than
+  failing and waiting an hour.
+
+## Several machines, one repo
+
+Each machine keeps its own config, its own clone and its own schedule, and pushes to
+the same repo. Syncing **every hour** is what makes this work: conflicts need two
+machines to change the same lines *between* syncs, so a shorter gap means far fewer of
+them. The per-machine minute keeps them from arriving together.
+
+When two machines do change the same lines, the second one to sync reports a conflict
+and stops, keeping its own copy, until the merge above is done. Everything that did
+not clash still syncs.
 
 State lives under `${XDG_STATE_HOME:-~/.local/state}/skill-sync`: `state.json`
 holds the last sync record, `schedule.json` the time `start` registered, and

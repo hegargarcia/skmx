@@ -159,6 +159,41 @@ test("reports a conflict and leaves the local skill untouched", async () => {
   expect(record).toMatchObject({ status: "conflict", commit: null });
   expect(record.summary).toContain("skills/alpha/SKILL.md");
   expect(await localFile("alpha").text()).toBe("local edit\n");
+  // The merge is aborted, so the way out is to run it again by hand — say so.
+  expect(record.summary).toContain("git merge origin/main");
+});
+
+test("no agent ever sees conflict markers in a skill", async () => {
+  await runSync(config);
+  await Bun.write(localFile("alpha"), "local edit\n");
+  await pushFromOther("alpha", "remote edit\n");
+
+  expect(await runSync(config)).toMatchObject({ status: "conflict" });
+
+  for (const agent of [".claude", ".agents", ".codex"]) {
+    const text = await Bun.file(
+      join(config.agentHome, agent, "skills", "alpha", "SKILL.md"),
+    ).text();
+    expect(text).not.toContain("<<<<<<<");
+  }
+});
+
+test("takes the other machine's work and retries when a push is refused once", async () => {
+  await runSync(config);
+  const hook = join(root, "remote.git", "hooks", "pre-receive");
+  await Bun.write(
+    hook,
+    ['#!/bin/sh', 'f="$GIT_DIR/refused"', 'if [ ! -f "$f" ]; then touch "$f"; exit 1; fi', "exit 0"].join(
+      "\n",
+    ),
+  );
+  await $`chmod +x ${hook}`.quiet();
+  await Bun.write(localFile("alpha"), "alpha v2\n");
+
+  expect(await runSync(config)).toMatchObject({ status: "ok" });
+
+  await $`git -C ${other} pull --ff-only`.quiet();
+  expect(await otherFile("alpha").text()).toBe("alpha v2\n");
 });
 
 test("propagates a file deleted from a skill once a base sync exists", async () => {

@@ -10,6 +10,7 @@ import {
   formatTimeOfDay,
   nextRun,
   readSchedule,
+  stableMinute,
   TimeOfDay,
 } from "../src/cron.ts";
 
@@ -91,6 +92,58 @@ test("round-trips a schedule through its cron expression", () => {
   const schedule = { hour: 9, minute: 30, days: [1, 3, 5] };
 
   expect(CronExpression.parse(cronExpression(schedule))).toEqual(schedule);
+});
+
+test.each([
+  [{ hour: null, minute: 37, days: [1, 2, 3, 4, 5, 6, 0] }, "37 * * * *"],
+  [{ hour: null, minute: 0, days: [1, 2, 3, 4, 5] }, "0 * * * 1,2,3,4,5"],
+])("turns the hourly schedule %o into %p", (schedule, expected) => {
+  expect(cronExpression(schedule)).toBe(expected);
+});
+
+test.each([
+  ["37 * * * *", { hour: null, minute: 37, days: [1, 2, 3, 4, 5, 6, 0] }],
+  ["0 * * * 1-5", { hour: null, minute: 0, days: [1, 2, 3, 4, 5] }],
+])("reads the hourly expression %p", (expression, expected) => {
+  expect(CronExpression.parse(expression)).toEqual(expected);
+});
+
+test.each([
+  [{ hour: null, minute: 37, days: [1, 2, 3, 4, 5, 6, 0] }, "Every hour at :37"],
+  [{ hour: null, minute: 5, days: [1, 2, 3, 4, 5] }, "Weekdays, every hour at :05"],
+])("describes the hourly schedule %o", (schedule, expected) => {
+  expect(formatSchedule(schedule)).toBe(expected);
+});
+
+test("gives each machine its own minute, the same one every time", () => {
+  expect(stableMinute("desktop")).toBe(stableMinute("desktop"));
+  expect(stableMinute("desktop")).not.toBe(stableMinute("macbook"));
+  for (const seed of ["a", "b", "c", "desktop", "macbook", "ci-box"]) {
+    expect(stableMinute(seed)).toBeGreaterThanOrEqual(0);
+    expect(stableMinute(seed)).toBeLessThan(60);
+  }
+});
+
+test("next hourly run is later this hour when the minute is still ahead", () => {
+  const now = new Date("2026-07-27T14:10:00");
+  expect(nextRun({ hour: null, minute: 37, days: [1, 2, 3, 4, 5, 6, 0] }, now)).toEqual(
+    new Date("2026-07-27T14:37:00"),
+  );
+});
+
+test("next hourly run rolls into the next hour once the minute has passed", () => {
+  const now = new Date("2026-07-27T14:40:00");
+  expect(nextRun({ hour: null, minute: 37, days: [1, 2, 3, 4, 5, 6, 0] }, now)).toEqual(
+    new Date("2026-07-27T15:37:00"),
+  );
+});
+
+test("next hourly run skips days the schedule does not run", () => {
+  // 2026-08-01 is a Saturday, so a weekdays-only schedule waits for Monday.
+  const now = new Date("2026-08-01T14:40:00");
+  expect(nextRun({ hour: null, minute: 0, days: [1, 2, 3, 4, 5] }, now)).toEqual(
+    new Date("2026-08-03T00:00:00"),
+  );
 });
 
 test("puts several days into one cron expression, lowest first", () => {

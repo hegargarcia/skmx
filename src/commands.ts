@@ -18,7 +18,7 @@ import {
   installSchedule,
   isRegistered,
   CronExpression,
-  EVERY_DAY_AT_MIDNIGHT,
+  everyHour,
   formatSchedule,
   nextRun,
   pauseSchedule,
@@ -232,7 +232,7 @@ async function configure(
   const config = await loadConfig();
   const configured = config.repo !== undefined && config.skills.length > 0;
   const given = repo !== undefined || skills !== undefined || cron !== undefined;
-  if (configured && !edit) return { config, schedule: schedule ?? EVERY_DAY_AT_MIDNIGHT };
+  if (configured && !edit) return { config, schedule: schedule ?? everyHour() };
 
   // Answering everything with flags is a complete setup, terminal or not.
   if (repo !== undefined && skills !== undefined && cron !== undefined) {
@@ -242,7 +242,7 @@ async function configure(
   if (!interactive) {
     // Nothing left to ask on a configured machine, so re-register what it has.
     if (configured && !given) {
-      return { config, schedule: schedule ?? EVERY_DAY_AT_MIDNIGHT };
+      return { config, schedule: schedule ?? everyHour() };
     }
 
     console.error(

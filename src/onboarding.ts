@@ -3,7 +3,7 @@ import type { SyncedSkill } from "./config.ts";
 import {
   ALL_DAYS,
   dayName,
-  EVERY_DAY_AT_MIDNIGHT,
+  everyHour,
   formatTimeOfDay,
   TimeOfDay,
   type Schedule,
@@ -82,14 +82,18 @@ async function pickCopy(prompt: PromptApi, group: SkillGroup) {
 /** Offered as one keystroke each; any other time can be typed instead. */
 const SUGGESTED_TIMES = ["09:00", "00:00", "21:00"] as const;
 
+const HOURLY = "hourly";
 const PICK_DAYS = "pick";
 
 /**
  * The handful of rhythms most schedules actually are, which is how calendars and job
  * monitors ask this: common shapes first, the day-by-day choice last.
+ *
+ * Hourly leads because it is what keeps several machines close together — the less
+ * time between syncs, the less chance two of them edit the same skill in the gap.
  */
 const CADENCES = [
-  { value: "daily", label: "Every day", hint: "nightly", days: [...ALL_DAYS] },
+  { value: "daily", label: "Every day", hint: "at a time you choose", days: [...ALL_DAYS] },
   { value: "weekdays", label: "Weekdays", hint: "Mon–Fri", days: [1, 2, 3, 4, 5] },
   { value: "weekends", label: "Weekends", hint: "Sat & Sun", days: [6, 0] },
 ] as const;
@@ -98,19 +102,23 @@ const sameDays = (one: number[], other: readonly number[]) =>
   one.length === other.length && [...one].sort().join() === [...other].sort().join();
 
 /**
- * Asks when to sync: how often first, then the time. Defaults to every day at
- * midnight, or to whatever is already scheduled.
+ * Asks when to sync: how often first, then the time for anything less than hourly.
+ * Defaults to every hour, or to whatever is already scheduled.
  */
-export async function pickSchedule(prompt: PromptApi, current = EVERY_DAY_AT_MIDNIGHT) {
+export async function pickSchedule(prompt: PromptApi, current = everyHour()) {
   const matching = CADENCES.find((cadence) => sameDays(current.days, cadence.days));
 
   const cadence = await prompt.select("How often should the skills sync?", {
     options: [
+      { value: HOURLY, label: "Every hour", hint: "recommended, keeps machines in step" },
       ...CADENCES.map(({ value, label, hint }) => ({ value, label, hint })),
       { value: PICK_DAYS, label: "Pick days…", hint: "choose them one by one" },
     ],
-    default: matching?.value ?? PICK_DAYS,
+    default: current.hour === null ? HOURLY : (matching?.value ?? PICK_DAYS),
   });
+
+  // Every hour needs no time, which leaves the common answer a single keystroke.
+  if (cadence === HOURLY) return everyHour();
 
   const days =
     cadence === PICK_DAYS
@@ -118,7 +126,7 @@ export async function pickSchedule(prompt: PromptApi, current = EVERY_DAY_AT_MID
       : [...CADENCES.find(({ value }) => value === cadence)!.days];
 
   const answer = await prompt(`What time? ${SUGGESTED_TIMES.join(SEPARATOR)}`, {
-    default: formatTimeOfDay(current),
+    default: current.hour === null ? SUGGESTED_TIMES[1] : formatTimeOfDay({ hour: current.hour, minute: current.minute }),
     placeholder: SUGGESTED_TIMES[0],
     validate: (value) =>
       TimeOfDay.safeParse(value).success ||

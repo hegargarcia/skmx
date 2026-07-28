@@ -115,7 +115,27 @@ test("pre-selects the skills already being synced", async () => {
   expect(prompt.asked[0]?.options).toMatchObject({ initialValues: ["showrunner"] });
 });
 
-test("offers the common rhythms first and the day-by-day choice last", async () => {
+test("leads with every hour, and asks nothing else for it", async () => {
+  const prompt = fakePrompt(["hourly"]);
+
+  const schedule = await pickSchedule(prompt);
+
+  expect(schedule.hour).toBeNull();
+  expect(schedule.days).toEqual([1, 2, 3, 4, 5, 6, 0]);
+  expect(prompt.asked).toHaveLength(1);
+  expect(prompt.asked[0]?.options).toMatchObject({
+    default: "hourly",
+    options: [
+      { label: "Every hour", hint: "recommended, keeps machines in step" },
+      { label: "Every day", hint: "at a time you choose" },
+      { label: "Weekdays", hint: "Mon–Fri" },
+      { label: "Weekends", hint: "Sat & Sun" },
+      { label: "Pick days…" },
+    ],
+  });
+});
+
+test("still asks for a time when the rhythm is less than hourly", async () => {
   const prompt = fakePrompt(["daily", "00:00"]);
 
   expect(await pickSchedule(prompt)).toEqual({ hour: 0, minute: 0, days: [1, 2, 3, 4, 5, 6, 0] });
@@ -123,16 +143,14 @@ test("offers the common rhythms first and the day-by-day choice last", async () 
     "How often should the skills sync?",
     "What time? 09:00 · 00:00 · 21:00",
   ]);
-  expect(prompt.asked[0]?.options).toMatchObject({
-    default: "daily",
-    options: [
-      { label: "Every day", hint: "nightly" },
-      { label: "Weekdays", hint: "Mon–Fri" },
-      { label: "Weekends", hint: "Sat & Sun" },
-      { label: "Pick days…" },
-    ],
-  });
-  expect(prompt.asked[1]?.options).toMatchObject({ default: "00:00" });
+});
+
+test("stays on hourly when that is what is already scheduled", async () => {
+  const prompt = fakePrompt(["hourly"]);
+
+  await pickSchedule(prompt, { hour: null, minute: 37, days: [1, 2, 3, 4, 5, 6, 0] });
+
+  expect(prompt.asked[0]?.options).toMatchObject({ default: "hourly" });
 });
 
 test.each([

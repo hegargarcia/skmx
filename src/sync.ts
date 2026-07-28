@@ -15,6 +15,9 @@ import { writeLastSync, type SyncRecord } from "./state.ts";
 
 const DIVERGENT_PATHS_LISTED = 4;
 
+/** How many times a push may lose a race before the sync gives up. */
+const PUSH_ATTEMPTS = 3;
+
 /** Used only when the machine has no git identity of its own. */
 const FALLBACK_AUTHOR = ["user.name=skill-sync", "user.email=skill-sync@localhost"];
 
@@ -98,21 +101,32 @@ async function performSync(config: Config) {
   }
 
   const committed = await commitLocalEdits(git);
-  const incoming = published ? await countCommits(git, `HEAD..${remoteBranch}`) : 0;
+  let incoming = published ? await countCommits(git, `HEAD..${remoteBranch}`) : 0;
   if (incoming > 0) {
-    try {
-      await git.merge([remoteBranch, "--no-edit"]);
-    } catch (error) {
-      return await abortMerge(git, error, clonePath);
-    }
+    const conflict = await mergeRemote(git, remoteBranch, clonePath);
+    if (conflict !== null) return conflict;
   }
 
-  const outgoing = published
-    ? await countCommits(git, `${remoteBranch}..HEAD`)
-    : (await refExists(git, "HEAD"))
-      ? await countCommits(git, "HEAD")
-      : 0;
-  if (outgoing > 0) await git.push(["--set-upstream", "origin", branch]);
+  let outgoing = await countOutgoing(git, published, remoteBranch);
+  for (let attempt = 0; outgoing > 0; attempt++) {
+    const pushed = await git.push(["--set-upstream", "origin", branch]).then(
+      () => true,
+      () => false,
+    );
+    if (pushed) break;
+
+    // Another machine pushed in the meantime. Take its work and try again, rather
+    // than failing and leaving this machine an hour behind.
+    if (attempt >= PUSH_ATTEMPTS) throw new Error(`could not push to ${branch} after ${attempt + 1} tries`);
+    await git.fetch("origin");
+    const arrived = await countCommits(git, `HEAD..${remoteBranch}`);
+    if (arrived > 0) {
+      const conflict = await mergeRemote(git, remoteBranch, clonePath);
+      if (conflict !== null) return conflict;
+      incoming += arrived;
+    }
+    outgoing = await countOutgoing(git, true, remoteBranch);
+  }
 
   // Both sides now match this commit, making it the ancestor the next sync merges from.
   await git.raw(["update-ref", BASE_REF, "HEAD"]);
@@ -201,6 +215,23 @@ async function countCommits(git: SimpleGit, range: string) {
   return Number((await git.raw(["rev-list", "--count", range])).trim());
 }
 
+const countOutgoing = async (git: SimpleGit, published: boolean, remoteBranch: string) =>
+  published
+    ? await countCommits(git, `${remoteBranch}..HEAD`)
+    : (await refExists(git, "HEAD"))
+      ? await countCommits(git, "HEAD")
+      : 0;
+
+/** Returns a conflict record when the merge could not be completed, else null. */
+async function mergeRemote(git: SimpleGit, remoteBranch: string, clonePath: string) {
+  try {
+    await git.merge([remoteBranch, "--no-edit"]);
+    return null;
+  } catch (error) {
+    return await abortMerge(git, error, clonePath, remoteBranch);
+  }
+}
+
 /**
  * rsync itemize lines that mean the file tree actually changed — a transfer,
  * creation, or deletion. A leading `.` is an attribute-only difference such as a
@@ -269,8 +300,21 @@ function diverged(paths: string[], clonePath: string) {
   } as const;
 }
 
-/** Leaves local skills untouched — a conflict needs a human, so report and stop. */
-async function abortMerge(git: SimpleGit, error: unknown, clonePath: string) {
+/**
+ * Leaves local skills untouched — a conflict needs a human, so report and stop. The
+ * merge is aborted rather than left in place because every agent reads this clone
+ * through a link, and none of them should find conflict markers in a skill.
+ *
+ * That also means the working tree is clean afterwards, so the way out is to perform
+ * the merge again by hand. The summary spells that out: editing the file and
+ * committing it is not enough, and leaves the sync conflicted on every later run.
+ */
+async function abortMerge(
+  git: SimpleGit,
+  error: unknown,
+  clonePath: string,
+  remoteBranch: string,
+) {
   const conflicts =
     error instanceof GitResponseError
       ? (error.git as MergeResult).conflicts
@@ -282,7 +326,10 @@ async function abortMerge(git: SimpleGit, error: unknown, clonePath: string) {
   const detail = conflicts.length > 0 ? `in ${conflicts.join(", ")}` : describeError(error);
   return {
     status: "conflict",
-    summary: `merge conflict ${detail} — resolve in ${clonePath}, then run \`skill-sync sync\``,
+    summary:
+      `merge conflict ${detail} — another machine changed the same lines. To settle it: ` +
+      `cd ${clonePath} && git merge ${remoteBranch}, fix the marked files, ` +
+      "then git add -A && git commit",
     commit: null,
   } as const;
 }
