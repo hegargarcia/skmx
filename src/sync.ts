@@ -12,6 +12,7 @@ import {
 import { missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
 import { fingerprint, linkSkills, repoDirName } from "./skills.ts";
 import { writeLastSync, type SyncRecord } from "./state.ts";
+import { WARN } from "./ui.ts";
 
 const DIVERGENT_PATHS_LISTED = 4;
 
@@ -109,9 +110,12 @@ async function performSync(config: Config) {
   const divergent = plans.flatMap((plan) => plan.unreconciled);
   if (divergent.length > 0) return diverged(divergent, clonePath);
 
-  for (const plan of plans.filter((plan) => plan.bootstrap)) {
+  for (const plan of plans.filter((plan) => plan.copy !== "nothing")) {
+    // Only a skill arriving for the first time is mirrored, which is the one time a
+    // stale file in the repo should go. Otherwise additions are added, nothing removed.
+    const flags = plan.copy === "everything" ? [...MIRROR, "--delete"] : MIRROR;
     await mkdir(plan.destination, { recursive: true });
-    await $`rsync ${MIRROR} --delete ${`${plan.skill.path}/`} ${`${plan.destination}/`}`.quiet();
+    await $`rsync ${flags} ${`${plan.skill.path}/`} ${`${plan.destination}/`}`.quiet();
   }
 
   const committed = await commitLocalEdits(git);
@@ -146,11 +150,13 @@ async function performSync(config: Config) {
   await git.raw(["update-ref", BASE_REF, "HEAD"]);
   const head = await git.revparse(["--short", "HEAD"]);
 
+  const ignored = await ignoredSkillFiles(git);
   const changes = [
     taught && "set the repo to merge skill markdown by keeping both sides",
     committed && "committed local edits",
     incoming > 0 && `merged ${plural(incoming, "commit")} from origin`,
     outgoing > 0 && `pushed ${plural(outgoing, "commit")}`,
+    ignored !== null && `${WARN} the repo's .gitignore skipped ${ignored}`,
   ].filter((change): change is string => change !== false);
 
   // Every agent reads the clone, so linking is what actually installs the skills.
@@ -217,6 +223,25 @@ async function refExists(git: SimpleGit, ref: string) {
     .catch(() => false);
 }
 
+/**
+ * Files inside a skill that the repo's own .gitignore excludes. Staging skips them
+ * without a word, so a skill carrying, say, a `node_modules` in a repo that ignores
+ * one would lose it on every other machine while the sync still reported success.
+ * The rules are the repo's own, so they are respected and named rather than overridden.
+ */
+async function ignoredSkillFiles(git: SimpleGit) {
+  const status = await git.raw(["status", "--porcelain", "--ignored", "--", "skills"]);
+  const paths = status
+    .split("\n")
+    .filter((line) => line.startsWith("!! "))
+    .map((line) => line.slice(3).trim());
+  if (paths.length === 0) return null;
+
+  const listed = paths.slice(0, DIVERGENT_PATHS_LISTED).join(", ");
+  const rest = paths.length - DIVERGENT_PATHS_LISTED;
+  return `${listed}${rest > 0 ? ` and ${plural(rest, "other")}` : ""}`;
+}
+
 /** Adds the union attribute to the repo, once, keeping anything already in the file. */
 async function ensureUnionMerge(git: SimpleGit, clonePath: string) {
   const path = join(clonePath, ".gitattributes");
@@ -280,13 +305,23 @@ const contentChanges = (itemized: string) =>
  * be decided here: either side may hold the edit worth keeping, so it is reported.
  */
 async function planFor(skill: SyncedSkill, destination: string) {
-  const plan = { skill, destination, bootstrap: false, unreconciled: [] as string[] };
+  const plan = {
+    skill,
+    destination,
+    copy: "nothing" as "nothing" | "everything" | "additions",
+    unreconciled: [] as string[],
+  };
 
   if (await sameDirectory(skill.path, destination)) return plan;
-  if (!(await isDirectory(destination))) return { ...plan, bootstrap: true };
+  if (!(await isDirectory(destination))) return { ...plan, copy: "everything" } as const;
   if ((await fingerprint(skill.path)) === (await fingerprint(destination))) return plan;
 
-  return { ...plan, unreconciled: await differences(skill, destination) };
+  const unreconciled = await differences(skill, destination);
+  if (unreconciled.length > 0) return { ...plan, unreconciled };
+
+  // Nothing would be overwritten or deleted, so the two differ only by files this
+  // machine has and the repo does not. Bring those over; leave the rest as it is.
+  return { ...plan, copy: "additions" } as const;
 }
 
 /**

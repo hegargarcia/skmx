@@ -207,6 +207,18 @@ the repo from another machine are merged rather than overwritten.
 - **A directory in the way of a link is only replaced when it already holds exactly
   what the clone holds.** Otherwise it has content that was never pushed, so it is
   left alone and named in the summary.
+- **Everything a skill holds is pushed**, not just its markdown: nested folders,
+  scripts, JSON, dotfiles and binaries, with the executable bit and any symlinks
+  inside the skill preserved. Two things do not travel — an **empty directory**, which
+  git cannot store, and anything the repo's own **`.gitignore`** excludes. The second
+  is easy to miss, so the sync names those files rather than dropping them quietly:
+
+  ```
+  ✓ ok: pushed 1 commit, ⚠ the repo's .gitignore skipped skills/rich/notes.log
+  ```
+
+  The rules are the repo's own, so they are respected rather than overridden — remove
+  the pattern if you want the file synced.
 - **Skills the repo has that you did not select are left alone**, and never linked.
 - **A push that loses a race is retried.** With several machines on one repo, two can
   push in the same minute; the loser fetches, merges and pushes again rather than

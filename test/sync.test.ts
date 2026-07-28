@@ -197,6 +197,51 @@ test("no agent ever sees conflict markers in a skill", async () => {
   }
 });
 
+test("pushes everything a skill holds, not just its markdown", async () => {
+  await Bun.write(localFile("alpha", "references/deep.md"), "deep\n");
+  await Bun.write(localFile("alpha", "settings.json"), '{ "on": true }\n');
+  await Bun.write(localFile("alpha", ".hidden"), "hidden\n");
+  const script = join(skillsHome, "alpha", "run.sh");
+  await Bun.write(script, "#!/bin/sh\necho hi\n");
+  await $`chmod +x ${script}`.quiet();
+
+  expect(await runSync(config)).toMatchObject({ status: "ok" });
+
+  await $`git -C ${other} pull --ff-only`.quiet();
+  for (const file of ["references/deep.md", "settings.json", ".hidden", "run.sh"]) {
+    expect(await otherFile("alpha", file).exists()).toBe(true);
+  }
+  // The executable bit survives, so a script in a skill still runs on the next machine.
+  const modes = await $`git -C ${other} ls-files --stage skills/alpha/run.sh`.quiet();
+  expect(modes.stdout.toString()).toContain("100755");
+});
+
+test("keeps pushing non-markdown files as they change", async () => {
+  await Bun.write(localFile("alpha", "settings.json"), '{ "on": true }\n');
+  await runSync(config);
+  await Bun.write(localFile("alpha", "settings.json"), '{ "on": false }\n');
+
+  expect(await runSync(config)).toMatchObject({ status: "ok" });
+
+  await $`git -C ${other} pull --ff-only`.quiet();
+  expect(await otherFile("alpha", "settings.json").text()).toBe('{ "on": false }\n');
+});
+
+test("names the skill files the repo's own gitignore leaves behind", async () => {
+  await runSync(config);
+  // The rule has to be in place before the file appears: git only ignores what it
+  // does not already track.
+  await pushFromOther("alpha", "*.log\n", "../../.gitignore");
+  await runSync(config);
+  await Bun.write(localFile("alpha", "notes.log"), "debug\n");
+
+  const record = await runSync(config);
+
+  expect(record.status).toBe("ok");
+  expect(record.summary).toContain("skills/alpha/notes.log");
+  expect(record.summary).toContain(".gitignore skipped");
+});
+
 test("adds the union attribute once, keeping what the repo already had", async () => {
   const attributes = join(config.reposDir, "remote", ".gitattributes");
   await runSync(config);
