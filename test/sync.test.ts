@@ -51,6 +51,7 @@ beforeEach(async () => {
     branch: "main",
     skills: [],
     configPath: join(root, "config.json"),
+    checkout: undefined,
     reposDir: join(root, "repos"),
     agentHome,
     stateDir,
@@ -338,6 +339,66 @@ test("reports git's own reason when a command fails", async () => {
 
   expect(record.status).toBe("error");
   expect(record.summary).toContain("does not exist");
+});
+
+test("works out of a checkout you already keep, instead of cloning its own", async () => {
+  const checkout = join(root, "mine");
+  await $`git clone ${join(root, "remote.git")} ${checkout}`.quiet();
+  // The skill is taken straight from that checkout, which makes it the source.
+  const inCheckout = join(checkout, "skills", "alpha");
+  const mine = { ...config, checkout, skills: [{ name: "alpha", path: inCheckout }] };
+  await Bun.write(join(inCheckout, "SKILL.md"), "edited in my own checkout\n");
+  // This machine keeps its skills in the checkout, so the agent directory is free.
+  await rm(join(skillsHome, "alpha"), { recursive: true });
+
+  expect(await runSync(mine)).toMatchObject({ status: "ok" });
+
+  await $`git -C ${other} pull --ff-only`.quiet();
+  expect(await otherFile("alpha").text()).toBe("edited in my own checkout\n");
+  // Nothing was cloned behind your back, and the agents read your checkout.
+  expect(await Bun.file(join(config.reposDir, "remote", ".git", "HEAD")).exists()).toBe(false);
+  expect(await readlink(join(config.agentHome, ".claude", "skills", "alpha"))).toBe(inCheckout);
+});
+
+test("leaves unfinished work in your checkout alone", async () => {
+  const checkout = join(root, "mine");
+  await $`git clone ${join(root, "remote.git")} ${checkout}`.quiet();
+  const mine = {
+    ...config,
+    checkout,
+    skills: [{ name: "alpha", path: join(checkout, "skills", "alpha") }],
+  };
+  // A draft of something else in the repo, and a scratch file, neither committed.
+  await Bun.write(join(checkout, "README.md"), "half-written\n");
+  await Bun.write(join(checkout, "notes-to-self.txt"), "keep me\n");
+
+  expect(await runSync(mine)).toMatchObject({ status: "ok" });
+
+  expect(await Bun.file(join(checkout, "README.md")).text()).toBe("half-written\n");
+  expect(await Bun.file(join(checkout, "notes-to-self.txt")).text()).toBe("keep me\n");
+});
+
+test("refuses a checkout that is not a git repo, rather than clearing it", async () => {
+  const notARepo = join(root, "not-a-repo");
+  await Bun.write(join(notARepo, "precious.txt"), "do not delete me\n");
+
+  const record = await runSync({ ...config, checkout: notARepo });
+
+  expect(record).toMatchObject({ status: "error" });
+  expect(record.summary).toContain("is not a git checkout");
+  expect(await Bun.file(join(notARepo, "precious.txt")).exists()).toBe(true);
+});
+
+test("refuses a checkout of a different repo", async () => {
+  const elsewhere = join(root, "elsewhere.git");
+  const checkout = join(root, "wrong");
+  await $`git init --bare --initial-branch=main ${elsewhere}`.quiet();
+  await $`git clone ${elsewhere} ${checkout}`.quiet();
+
+  const record = await runSync({ ...config, checkout });
+
+  expect(record).toMatchObject({ status: "error" });
+  expect(record.summary).toContain("not");
 });
 
 test("reports a skill that is no longer where it was selected from", async () => {

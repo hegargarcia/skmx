@@ -177,7 +177,8 @@ export const status = defineCommand({
       ],
       [
         "clone",
-        config.repo ? join(config.reposDir, repoDirName(config.repo)) : config.reposDir,
+        config.checkout ??
+          (config.repo ? join(config.reposDir, repoDirName(config.repo)) : config.reposDir),
       ],
       ["config", config.configPath],
       ["state", config.stateDir],

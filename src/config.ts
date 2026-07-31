@@ -29,6 +29,7 @@ const FileSchema = z
     repo: z.string().trim().min(1).optional(),
     branch: z.string().trim().min(1).optional(),
     skills: z.array(SyncedSkillSchema).optional(),
+    checkout: z.string().trim().min(1).transform(expandHome).optional(),
   })
   .strict();
 
@@ -52,7 +53,13 @@ export async function loadConfig() {
     branch: env.SKILL_SYNC_BRANCH ?? file.branch ?? DEFAULT_BRANCH,
     skills: file.skills ?? [],
     configPath,
-    /** Clones live beside the config, one per repo, and are what the agents link to. */
+    /**
+     * A checkout of the repo you already keep and work in. Set it and skill-sync uses
+     * that instead of cloning its own, which stops two clones of one repo competing
+     * for the same agent directories.
+     */
+    checkout: file.checkout,
+    /** Where skill-sync puts its own clone when `checkout` is not set. */
     reposDir: join(home, "repos"),
     /** The home directory holding the agent directories that get linked. */
     agentHome: homedir(),

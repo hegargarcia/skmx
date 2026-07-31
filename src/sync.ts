@@ -10,7 +10,7 @@ import {
   type SimpleGit,
 } from "simple-git";
 import { missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
-import { fingerprint, linkSkills, repoDirName } from "./skills.ts";
+import { fingerprint, githubSlug, linkSkills, repoDirName } from "./skills.ts";
 import { writeLastSync, type SyncRecord } from "./state.ts";
 import { WARN } from "./ui.ts";
 
@@ -68,7 +68,7 @@ export async function runSync(config: Config) {
 async function performSync(config: Config) {
   const { repo, branch, skills } = config;
   if (!repo) throw new Error(missingRepoMessage(config.configPath));
-  const clonePath = join(config.reposDir, repoDirName(repo));
+  const clonePath = config.checkout ?? join(config.reposDir, repoDirName(repo));
   if (skills.length === 0) {
     throw new Error(`no skills selected to sync — run \`skill-sync setup\``);
   }
@@ -79,7 +79,7 @@ async function performSync(config: Config) {
   }
 
   await mkdir(config.stateDir, { recursive: true });
-  const git = await openRepo(repo, clonePath);
+  const git = await openRepo(repo, clonePath, config.checkout !== undefined);
 
   // A merge interrupted mid-flight would fail every later run.
   await git.raw(["merge", "--abort"]).catch(() => {});
@@ -91,9 +91,10 @@ async function performSync(config: Config) {
 
   const skillsInRepo = join(clonePath, "skills");
   await mkdir(skillsInRepo, { recursive: true });
-  if (!(await refExists(git, BASE_REF))) {
-    // Nothing has been synced yet, so anything sitting in the clone is leftover from
-    // an abandoned run — the remote as it stands is the only trustworthy comparison.
+  // Only ever in a clone of our own. Nothing has been synced yet, so anything sitting
+  // there is leftover from an abandoned run — but in a checkout the user works in, the
+  // same two commands would throw away edits they had not committed yet.
+  if (config.checkout === undefined && !(await refExists(git, BASE_REF))) {
     if (published) await git.reset(ResetMode.HARD, [remoteBranch]);
     await git.clean(CleanOptions.FORCE + CleanOptions.RECURSIVE);
   }
@@ -203,17 +204,42 @@ async function isDirectory(path: string) {
     .catch(() => false);
 }
 
-/** Clones on first use, and commits as the user when they have a git identity. */
-async function openRepo(repo: string, clonePath: string) {
+/**
+ * Clones on first use, and commits as the user when they have a git identity.
+ *
+ * A checkout named in the config is never created and never cleared: it is a
+ * directory the user works in, so being wrong about it has to fail loudly instead of
+ * deleting it. Its remote is checked too — pushing skills into the wrong project
+ * would be worse than not syncing.
+ */
+async function openRepo(repo: string, clonePath: string, provided: boolean) {
   if (!(await Bun.file(join(clonePath, ".git", "HEAD")).exists())) {
+    if (provided) {
+      throw new Error(
+        `${clonePath} is not a git checkout — point "checkout" at one, or drop it from ` +
+          "the config to let skill-sync keep its own clone",
+      );
+    }
+
     await rm(clonePath, { recursive: true, force: true });
     await simpleGit().clone(repo, clonePath);
   }
 
   const git = simpleGit(clonePath);
+  if (provided) {
+    const origin = (await git.getConfig("remote.origin.url")).value ?? "";
+    if (!sameRepo(origin, repo)) {
+      throw new Error(`${clonePath} is a checkout of ${origin || "no remote"}, not ${repo}`);
+    }
+  }
+
   const identity = await git.getConfig("user.email");
   return identity.value ? git : simpleGit(clonePath, { config: FALLBACK_AUTHOR });
 }
+
+/** Compares remotes by what they point at, so ssh and https forms of one repo agree. */
+const sameRepo = (one: string, other: string) =>
+  (githubSlug(one) ?? one).toLowerCase() === (githubSlug(other) ?? other).toLowerCase();
 
 /** `--quiet` makes a missing ref resolve to an empty string rather than reject. */
 async function refExists(git: SimpleGit, ref: string) {

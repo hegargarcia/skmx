@@ -263,6 +263,28 @@ typos do not pass silently.
 | `repo` | `SKILL_SYNC_REPO` | — | git remote URL of the skills repo (required) |
 | `skills` | — | `[]` | the skills to sync, as `{ "name", "path" }` entries |
 | `branch` | `SKILL_SYNC_BRANCH` | `main` | branch to sync |
+| `checkout` | — | — | a checkout of the repo you already keep, used instead of cloning |
+
+### Using a checkout you already have
+
+If you already keep the skills repo somewhere and work in it, point `checkout` at it
+and skill-sync will use that rather than cloning a second copy — two clones of one repo
+both linked from agent directories is a good way to lose an edit:
+
+```json
+{
+  "repo": "git@github.com:you/skills.git",
+  "checkout": "~/dev/skills",
+  "skills": [{ "name": "showrunner", "path": "~/dev/skills/skills/showrunner" }]
+}
+```
+
+Point the skills at that checkout too, and there is nothing to copy: the files the
+agents read, the files you edit, and the files that get pushed are all the same ones.
+
+A checkout you name is treated as yours. It is never created and never cleaned, so
+uncommitted work and untracked files are left alone, and skill-sync refuses to run if
+the path is not a git checkout or if its `origin` is a different repo.
 
 `setup` writes `skills` for you, but it is plain JSON and `path` accepts a leading
 `~`, so a skill kept outside the standard agent directories can be added by hand:
