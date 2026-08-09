@@ -135,7 +135,7 @@ skill-sync or moving your Node installation so the registered job uses the new t
 
 ## Development
 
-Node 20.12 or newer is required. Bun is not.
+Node 24 is required. Bun is not.
 
 ```bash
 npm install

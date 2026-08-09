@@ -22,7 +22,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20.12"
+    "node": "24.x"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
