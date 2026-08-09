@@ -1,14 +1,10 @@
-import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, symlink } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const SKILL_TARGETS = [".claude/skills", ".agents/skills", ".codex/skills"];
-const GLOBAL_TARGETS = [
-  { source: "AGENTS.md", targets: [".agents/AGENTS.md", ".codex/AGENTS.md"] },
-  { source: "CLAUDE.md", targets: [".claude/CLAUDE.md"] },
-] as const;
-
-type LinkPlan = { source: string; target: string; replace: boolean };
+type TargetState = "ready" | "linked" | "same-link" | "same-path" | "blocked";
+type LinkPlan = { source: string; target: string; replacement: "none" | "link" | "path" };
 export type LinkConflict = { source: string; target: string };
 
 export async function reconcileTargets(
@@ -17,13 +13,16 @@ export async function reconcileTargets(
   previouslyOwned: string[] = [],
 ) {
   const desired = await desiredLinks(repoDir, agentHome);
+  const ownedTargets = new Set(previouslyOwned);
   const plans: LinkPlan[] = [];
   const blocked: LinkConflict[] = [];
 
   for (const link of desired) {
-    const state = await inspectTarget(link.source, link.target);
-    if (state === "ready") plans.push({ ...link, replace: false });
-    if (state === "same") plans.push({ ...link, replace: true });
+    const owned = ownedTargets.has(link.target) && await pointsInto(link.target, repoDir);
+    const state = await inspectTarget(link.source, link.target, owned);
+    if (state === "ready") plans.push({ ...link, replacement: "none" });
+    if (state === "same-link") plans.push({ ...link, replacement: "link" });
+    if (state === "same-path") plans.push({ ...link, replacement: "path" });
     if (state === "blocked") blocked.push(link);
   }
   if (blocked.length > 0) return { links: previouslyOwned, linked: [], removed: [], blocked };
@@ -40,18 +39,23 @@ export async function reconcileTargets(
   const linked: string[] = [];
   for (const plan of plans) {
     await mkdir(dirname(plan.target), { recursive: true });
-    if (plan.replace) await rm(plan.target, { recursive: true, force: true });
-    await symlink(plan.source, plan.target, (await lstat(plan.source)).isDirectory() ? "dir" : "file");
+    if (plan.replacement === "link") await replaceLink(plan.source, plan.target);
+    else {
+      if (plan.replacement === "path") await rm(plan.target, { recursive: true, force: true });
+      await createLink(plan.source, plan.target);
+    }
     linked.push(plan.target);
   }
 
   return { links: desired.map((link) => link.target), linked, removed, blocked: [] };
 }
 
-export async function preflightTargets(repoDir: string, agentHome: string) {
+export async function preflightTargets(repoDir: string, agentHome: string, previouslyOwned: string[] = []) {
+  const ownedTargets = new Set(previouslyOwned);
   const blocked: LinkConflict[] = [];
   for (const link of await desiredLinks(repoDir, agentHome)) {
-    if ((await inspectTarget(link.source, link.target)) === "blocked") blocked.push(link);
+    const owned = ownedTargets.has(link.target) && await pointsInto(link.target, repoDir);
+    if ((await inspectTarget(link.source, link.target, owned)) === "blocked") blocked.push(link);
   }
   return blocked;
 }
@@ -77,28 +81,50 @@ async function desiredLinks(repoDir: string, agentHome: string) {
     }
   }
 
-  for (const mapping of GLOBAL_TARGETS) {
-    const source = join(repoDir, "global", mapping.source);
-    if (!(await exists(source))) continue;
-    for (const target of mapping.targets) links.push({ source, target: join(agentHome, target) });
+  const agents = join(repoDir, "AGENTS.md");
+  const claude = join(repoDir, "CLAUDE.md");
+  if (await exists(agents)) {
+    links.push({ source: agents, target: join(agentHome, ".agents/AGENTS.md") });
+    links.push({ source: agents, target: join(agentHome, ".codex/AGENTS.md") });
+  }
+  if (await exists(claude)) {
+    links.push({ source: claude, target: join(agentHome, ".claude/CLAUDE.md") });
+  } else if (await exists(agents)) {
+    links.push({ source: agents, target: join(agentHome, ".claude/CLAUDE.md") });
   }
   return links;
 }
 
-async function inspectTarget(source: string, target: string) {
+async function inspectTarget(source: string, target: string, owned = false): Promise<TargetState> {
   const targetInfo = await lstat(target).catch(() => null);
-  if (targetInfo === null) return "ready" as const;
+  if (targetInfo === null) return "ready";
   if (targetInfo.isSymbolicLink()) {
-    const link = await readlink(target);
     const [actual, expected] = await Promise.all([
-      realpath(target).catch(() => resolve(dirname(target), link)),
+      realpath(target).catch(() => null),
       realpath(source),
     ]);
-    return actual === expected ? ("linked" as const) : ("blocked" as const);
+    if (actual === null) return owned ? "same-link" : "blocked";
+    if (actual === expected) return "linked";
+    if (owned) return "same-link";
+    return (await fingerprint(actual)) === (await fingerprint(expected)) ? "same-link" : "blocked";
   }
   return (await fingerprint(source)) === (await fingerprint(target))
-    ? ("same" as const)
-    : ("blocked" as const);
+    ? "same-path"
+    : "blocked";
+}
+
+async function createLink(source: string, target: string) {
+  await symlink(source, target, (await lstat(source)).isDirectory() ? "dir" : "file");
+}
+
+async function replaceLink(source: string, target: string) {
+  const temporary = join(dirname(target), `.${basename(target)}.skill-sync-${randomUUID()}`);
+  await createLink(source, temporary);
+  try {
+    await rename(temporary, target);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 async function fingerprint(path: string) {

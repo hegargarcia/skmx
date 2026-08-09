@@ -5,6 +5,7 @@ import { cleanupRoots, tempRoot } from "./helpers.ts";
 
 const mocks = vi.hoisted(() => ({
   installSchedule: vi.fn(),
+  preflightTargets: vi.fn(async () => []),
   runSync: vi.fn(),
   uninstallSchedule: vi.fn(),
 }));
@@ -15,7 +16,7 @@ vi.mock("../src/github.ts", () => ({
 }));
 vi.mock("../src/repository.ts", () => ({ prepareRepo: vi.fn() }));
 vi.mock("../src/validation.ts", () => ({ validateManagedTree: vi.fn() }));
-vi.mock("../src/targets.ts", () => ({ preflightTargets: vi.fn(async () => []) }));
+vi.mock("../src/targets.ts", () => ({ preflightTargets: mocks.preflightTargets }));
 vi.mock("../src/scheduler.ts", () => ({
   installSchedule: mocks.installSchedule,
   uninstallSchedule: mocks.uninstallSchedule,
@@ -57,6 +58,11 @@ describe("repeat setup", () => {
     expect(mocks.runSync).toHaveBeenCalledWith(
       expect.objectContaining({ links: [join(root, "owned-link")], intervalMinutes: 15 }),
       "setup",
+    );
+    expect(mocks.preflightTargets).toHaveBeenCalledWith(
+      join(root, "state", "repo"),
+      join(root, "agent-home"),
+      [join(root, "owned-link")],
     );
     expect(mocks.uninstallSchedule).toHaveBeenCalledOnce();
     expect(mocks.installSchedule).not.toHaveBeenCalled();

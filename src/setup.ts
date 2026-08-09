@@ -24,7 +24,7 @@ export async function setup(options: SetupOptions, env: NodeJS.ProcessEnv = proc
   await prepareRepo(repo, options.branch, paths.repoDir);
   await validateManagedTree(paths.repoDir);
 
-  const blocked = await preflightTargets(paths.repoDir, paths.agentHome);
+  const blocked = await preflightTargets(paths.repoDir, paths.agentHome, existing?.links ?? []);
   if (blocked.length > 0) {
     const targets = blocked.map((item) => `  - ${item.target}`).join("\n");
     throw new Error(

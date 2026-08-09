@@ -23,12 +23,11 @@ export async function createRemote() {
   await git(root, "init", "--bare", "--initial-branch=main", remote);
   await git(root, "clone", remote, seed);
   await mkdir(join(seed, "skills", "writing"), { recursive: true });
-  await mkdir(join(seed, "global"), { recursive: true });
   await writeFile(
     join(seed, "skills", "writing", "SKILL.md"),
     "---\nname: writing\ndescription: Write clearly\n---\n\n# Writing\n\nKeep it clear.\n\nKeep it short.\n",
   );
-  await writeFile(join(seed, "global", "AGENTS.md"), "# Global agents\n");
+  await writeFile(join(seed, "AGENTS.md"), "# Global agents\n");
   await git(seed, "add", ".");
   await git(seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed");
   await git(seed, "push", "origin", "main");
