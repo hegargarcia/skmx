@@ -1,13 +1,10 @@
-# dependencies (bun install)
+# dependencies
 node_modules
 
 # output
 out
 dist
 *.tgz
-
-# bunli codegen
-.bunli
 
 # local config scratch copies
 config.example.json

@@ -1,297 +1,187 @@
-import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { defineCommand, option, type PromptApi } from "@bunli/core";
-import { z } from "zod";
-import { loadConfig, missingRepoMessage, type Config, type SyncedSkill } from "./config.ts";
-import { assertGhReady, createRepo, listRepos } from "./github.ts";
-import { pickRepo, pickSchedule, pickSkills } from "./onboarding.ts";
-import {
-  discoverSkills,
-  githubSlug,
-  groupSkills,
-  repoDirName,
-  skillAt,
-  sshUrl,
-} from "./skills.ts";
-import {
-  formatTimeOfDay,
-  installSchedule,
-  isRegistered,
-  CronExpression,
-  everyHour,
-  formatSchedule,
-  nextRun,
-  pauseSchedule,
-  readSchedule,
-  type Schedule,
-} from "./cron.ts";
-import { readLastSync } from "./state.ts";
+import * as p from "@clack/prompts";
+import { Command, InvalidArgumentError } from "commander";
+import pc from "picocolors";
+import packageJson from "../package.json" with { type: "json" };
+import { loadConfig, updateConfig } from "./config.ts";
+import { withLock } from "./lock.ts";
+import { readRuns } from "./runs.ts";
+import { uninstallSchedule } from "./scheduler.ts";
+import { setup } from "./setup.ts";
 import { runSync } from "./sync.ts";
-import { ARROW, BULLET, label, mark, OK, PAUSED, SEPARATOR, toneFor, type Tone } from "./ui.ts";
+import { removeOwnedTargets } from "./targets.ts";
 
-const STALE_AFTER_MS = 26 * 60 * 60 * 1000;
+type SetupFlags = { repo?: string; branch: string; interval?: number };
 
-const pad = (value: number) => String(value).padStart(2, "0");
+export function createProgram() {
+  const program = new Command()
+    .name("ss")
+    .description("Keep agent skills and global instructions in sync through GitHub")
+    .version(packageJson.version)
+    .showHelpAfterError();
 
-const formatDateTime = (date: Date) =>
-  `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-  `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-
-/** `owner/repo` is what the pickers show and what people paste, so accept it too. */
-const repoOption = option(
-  z
-    .string()
-    .trim()
-    .min(1)
-    .transform((repo) => (/^[\w.-]+\/[\w.-]+$/.test(repo) ? sshUrl(repo) : repo))
-    .optional(),
-  {
-    short: "r",
-    description: "The repo to sync to, as owner/name or a git URL. Skips the repo question.",
-  },
-);
-
-const skillOption = option(z.array(z.string().trim().min(1)).optional(), {
-  short: "s",
-  repeatable: true,
-  description:
-    "Path to a skill folder, which must hold a SKILL.md. Repeat for each skill. Skips the skill question.",
-});
-
-const cronOption = option(CronExpression.optional(), {
-  short: "c",
-  // The renderer wraps this under the flag column, so it reads as a paragraph.
-  description:
-    'When to sync, as cron — "0 9 * * 1-5". Day of month and month are not supported, so both must be *. Minute and hour take plain numbers; day of week takes *, a list like 1,3,5, or a range like 1-5. Skips the schedule questions.',
-});
-
-export const setup = defineCommand({
-  name: "setup",
-  // The renderer prints this unwrapped, so it stays inside a narrow terminal.
-  description: "Pick the skills, the repo and when — or pass every flag to skip the questions",
-  options: { repo: repoOption, skill: skillOption, cron: cronOption },
-  async handler({ flags, prompt, terminal }) {
-    const existing = await readSchedule(await loadConfig());
-    const { config, schedule } = await configure(prompt, terminal.isInteractive, {
-      repo: flags.repo,
-      skills: flags.skill && (await Promise.all(flags.skill.map(skillAt))),
-      cron: flags.cron,
-      // Running setup again is how the configuration is changed, so always ask.
-      edit: true,
-      schedule: existing ?? undefined,
+  program
+    .command("setup")
+    .description("connect a GitHub repository and enable interval sync")
+    .option("-r, --repo <repository>", "GitHub repository (owner/name or clone URL)")
+    .option("-b, --branch <branch>", "branch to sync", "main")
+    .option("-i, --interval <minutes>", "interval that divides 60 (for example 5, 15, 30, or 60)", parseInterval)
+    .action(async (flags: SetupFlags) => {
+      p.intro(pc.inverse(" skill-sync setup "));
+      const answers = await setupAnswers(flags);
+      const progress = p.spinner();
+      progress.start("checking GitHub, repository, and target paths");
+      try {
+        const result = await setup(answers);
+        progress.stop(
+          result.scheduler
+            ? `background sync enabled with ${result.scheduler}`
+            : "first sync stopped; background sync was not enabled",
+        );
+        renderRun(result.run);
+        const details = [
+          `Repository: ${result.config.repoDir}`,
+          `Interval: every ${result.config.intervalMinutes} minutes`,
+        ].join("\n");
+        if (result.run.status !== "ok") {
+          p.note(details, "Setup incomplete");
+          process.exitCode = 1;
+        } else {
+          p.note(details, "Ready");
+          p.outro("Your skills are in sync.");
+        }
+      } catch (error) {
+        progress.stop("setup stopped safely");
+        throw error;
+      }
     });
 
-    await installSchedule(schedule, config);
-    prompt.note(
-      [
-        `${config.skills.map((skill) => skill.name).join(SEPARATOR)}`,
-        `${ARROW} ${config.repo} (${config.branch})`,
-        announce("Scheduled", schedule),
-      ].join("\n"),
-      "skill-sync",
-    );
-    prompt.outro(`${OK} Run \`skill-sync sync\` to push them now`);
-  },
-});
-
-export const start = defineCommand({
-  name: "start",
-  description: "Resume the nightly sync after a stop, running setup when unconfigured",
-  async handler({ prompt, terminal }) {
-    // Resuming leaves the configuration as it is; `setup` is where it changes.
-    const existing = await readSchedule(await loadConfig());
-    const { config, schedule } = await configure(prompt, terminal.isInteractive, {
-      edit: false,
-      schedule: existing ?? undefined,
+  program
+    .command("sync")
+    .description("sync now")
+    .action(async () => {
+      const run = await runSync(await loadConfig(), "manual");
+      renderRun(run);
+      if (run.status !== "ok") process.exitCode = 1;
     });
 
-    await installSchedule(schedule, config);
-    console.log(mark("ok", announce(existing ? "Resumed" : "Scheduled", schedule)));
-  },
-});
+  program
+    .command("logs")
+    .description("show configuration and recent sync runs")
+    .option("-n, --limit <count>", "number of runs to show", parseLimit, 20)
+    .action(async ({ limit }: { limit: number }) => {
+      const config = await loadConfig();
+      const runs = await readRuns(config.runsPath, 100);
+      const lastSuccess = runs.find((run) => run.status === "ok");
+      const lastProblem = runs.find((run) => run.status !== "ok");
+      console.log(`${pc.bold("Repository")}  ${config.repoDir}`);
+      console.log(`${pc.bold("Remote")}      ${config.repo}`);
+      console.log(`${pc.bold("Interval")}    every ${config.intervalMinutes} minutes`);
+      console.log(`${pc.bold("Owned links")} ${config.links.length}`);
+      console.log(`${pc.bold("Last success")} ${lastSuccess?.finishedAt ?? "never"}`);
+      console.log(
+        `${pc.bold("Last problem")} ${lastProblem ? `${lastProblem.finishedAt} (${lastProblem.status})` : "none"}`,
+      );
+      console.log();
+      if (runs.length === 0) {
+        console.log(pc.dim("No sync runs have been recorded yet."));
+        return;
+      }
+      for (const run of runs.slice(0, limit)) {
+        const state = run.status === "ok" ? pc.green("ok      ") : run.status === "conflict" ? pc.yellow("conflict") : pc.red("error   ");
+        console.log(`${run.finishedAt}  ${state}  ${pc.dim(run.trigger.padEnd(9))} ${run.summary}`);
+      }
+    });
 
-export const stop = defineCommand({
-  name: "stop",
-  description: "Pause the nightly sync, keeping the configuration",
-  async handler() {
-    const paused = await pauseSchedule(await loadConfig());
-    console.log(
-      paused
-        ? mark("paused", "Nightly sync paused — run `skill-sync start` to resume")
-        : mark("idle", "No nightly sync was scheduled"),
-    );
-  },
-});
+  program
+    .command("uninstall")
+    .description("remove background sync and owned links; preserve repository and logs")
+    .action(async () => {
+      const config = await loadConfig();
+      const { scheduleRemoved, links } = await withLock(config.lockPath, async () => {
+        const scheduleRemoved = await uninstallSchedule(config);
+        const links = await removeOwnedTargets(config.repoDir, config.links);
+        await updateConfig(config, {
+          repo: config.repo,
+          branch: config.branch,
+          intervalMinutes: config.intervalMinutes,
+          links: [],
+        });
+        return { scheduleRemoved, links };
+      });
+      p.note(
+        [
+          `Background job: ${scheduleRemoved ? "removed" : "not installed"}`,
+          `Owned links removed: ${links.length}`,
+          `Repository preserved: ${config.repoDir}`,
+          `Logs preserved: ${config.runsPath}`,
+        ].join("\n"),
+        "Uninstalled",
+      );
+    });
 
-export const status = defineCommand({
-  name: "status",
-  description: "Show the schedule, the last sync, and whether the sync is healthy",
-  async handler() {
-    const config = await loadConfig();
-    const schedule = await readSchedule(config);
-    const last = await readLastSync(config.statePath);
-    const stale = last !== null && Date.now() - Date.parse(last.finishedAt) > STALE_AFTER_MS;
-    const health: { tone: Tone; text: string } = !schedule
-      ? { tone: "idle", text: "not scheduled — run `skill-sync setup`" }
-      : schedule.paused
-        ? { tone: "paused", text: "paused — run `skill-sync start` to resume" }
-        : !(await isRegistered())
-          ? { tone: "warn", text: "missing from the OS scheduler — run `skill-sync start`" }
-          : last === null
-            ? { tone: "idle", text: "pending — scheduled but has not run yet" }
-            : last.status !== "ok"
-              ? { tone: "warn", text: `${last.status} — see last sync` }
-              : stale
-                ? { tone: "warn", text: "stale — no successful sync in the last 26 hours" }
-                : { tone: "ok", text: "ok" };
-    const active = schedule !== null && !schedule.paused;
+  program
+    .command("_scheduled", { hidden: true })
+    .action(async () => {
+      const run = await runSync(await loadConfig(), "scheduled");
+      console.log(`${run.finishedAt} ${run.status}: ${run.summary}`);
+      if (run.status !== "ok") process.exitCode = 1;
+    });
 
-    const lines = [
-      [
-        "schedule",
-        schedule
-          ? `${formatSchedule(schedule)}${schedule.paused ? ` ${PAUSED} paused` : ""}`
-          : "not scheduled",
-      ],
-      ["next run", active ? formatDateTime(nextRun(schedule)) : "—"],
-      [
-        "last sync",
-        last
-          ? mark(
-              toneFor(last.status),
-              `${formatDateTime(new Date(last.finishedAt))} ${last.status}: ${last.summary}` +
-                (last.commit ? ` (${last.commit})` : ""),
-            )
-          : "never",
-      ],
-      ["health", mark(health.tone, health.text)],
-      [
-        "repo",
-        config.repo ? `${config.repo} ${SEPARATOR.trim()} ${config.branch}` : "not configured",
-      ],
-      [
-        "skills",
-        config.skills.length > 0
-          ? config.skills.map((skill) => skill.name).join(SEPARATOR)
-          : "none selected",
-      ],
-      [
-        "clone",
-        config.checkout ??
-          (config.repo ? join(config.reposDir, repoDirName(config.repo)) : config.reposDir),
-      ],
-      ["config", config.configPath],
-      ["state", config.stateDir],
-    ] as const;
-
-    console.log(`${BULLET} skill-sync`);
-    for (const [name, value] of lines) console.log(`  ${label(name.padEnd(10))}${value}`);
-    if (health.tone === "warn") process.exit(1);
-  },
-});
-
-export const sync = defineCommand({
-  name: "sync",
-  description: "Sync now — this is what the scheduled run invokes",
-  async handler() {
-    const record = await runSync(await loadConfig());
-    console.log(
-      mark(
-        toneFor(record.status),
-        `${formatDateTime(new Date(record.finishedAt))} ${record.status}: ${record.summary}`,
-      ),
-    );
-    if (record.status !== "ok") process.exit(1);
-  },
-});
-
-const announce = (verb: string, schedule: Schedule) =>
-  `${verb} ${formatSchedule(schedule)} (next run ${formatDateTime(nextRun(schedule))})`;
-
-/**
- * Picks the skills and the repo. `setup` runs this every time, with what is already
- * configured pre-selected, which is how the configuration gets changed; `start` only
- * runs it when there is nothing configured yet. Either way it needs a terminal.
- */
-async function configure(
-  prompt: PromptApi,
-  interactive: boolean,
-  {
-    repo,
-    skills,
-    cron,
-    edit,
-    schedule,
-  }: {
-    repo?: string;
-    skills?: SyncedSkill[];
-    cron?: Schedule;
-    edit: boolean;
-    schedule?: Schedule;
-  },
-) {
-  const config = await loadConfig();
-  const configured = config.repo !== undefined && config.skills.length > 0;
-  const given = repo !== undefined || skills !== undefined || cron !== undefined;
-  if (configured && !edit) return { config, schedule: schedule ?? everyHour() };
-
-  // Answering everything with flags is a complete setup, terminal or not.
-  if (repo !== undefined && skills !== undefined && cron !== undefined) {
-    return { config: await save(config, { repo, skills }), schedule: cron };
-  }
-
-  if (!interactive) {
-    // Nothing left to ask on a configured machine, so re-register what it has.
-    if (configured && !given) {
-      return { config, schedule: schedule ?? everyHour() };
-    }
-
-    console.error(
-      `${configured ? "changing what is synced" : missingRepoMessage(config.configPath)} needs a ` +
-        "terminal — or answer every question at once with --repo, --skill and --cron",
-    );
-    process.exit(1);
-  }
-
-  prompt.intro(`skill-sync ${configured ? "setup · editing" : "setup"}`);
-  const chosenSkills = skills ?? (await askForSkills(prompt, config.skills));
-  const chosenRepo = repo ?? (await resolveRepo(prompt, config.repo));
-
-  return {
-    config: await save(config, { repo: chosenRepo, skills: chosenSkills }),
-    schedule: cron ?? (await pickSchedule(prompt, schedule)),
-  };
+  return program;
 }
 
-async function askForSkills(prompt: PromptApi, current: SyncedSkill[]) {
-  const available = await groupSkills(await discoverSkills());
-  if (available.length === 0) {
-    console.error("no skills found in ~/.claude/skills, ~/.agents/skills, or ~/.codex/skills");
-    process.exit(1);
+async function setupAnswers(flags: SetupFlags) {
+  if (!flags.repo && !process.stdin.isTTY) {
+    throw new Error("non-interactive setup requires `--repo`; optionally pass `--interval` and `--branch`");
   }
+  const repo = flags.repo ?? (await p.text({
+    message: "Which GitHub repository should be the source of truth?",
+    placeholder: "owner/skills",
+    validate: (value) => !value?.trim() ? "Enter owner/repository or a clone URL" : undefined,
+  }));
+  if (p.isCancel(repo)) cancelSetup();
 
-  return await pickSkills(prompt, available, current);
+  const interval = flags.interval ?? (!process.stdin.isTTY ? 60 : await p.select({
+    message: "How often should skill-sync run?",
+    initialValue: 60,
+    options: [
+      { value: 5, label: "Every 5 minutes" },
+      { value: 15, label: "Every 15 minutes" },
+      { value: 30, label: "Every 30 minutes" },
+      { value: 60, label: "Every hour", hint: "recommended" },
+    ],
+  }));
+  if (p.isCancel(interval)) cancelSetup();
+  return { repo: String(repo).trim(), branch: flags.branch, intervalMinutes: Number(interval) };
 }
 
-/** Lists the user's repos through `gh` — no OAuth flow of our own — and creates on request. */
-async function resolveRepo(prompt: PromptApi, current?: string) {
-  await assertGhReady();
-  const inUse = current === undefined ? undefined : (githubSlug(current) ?? undefined);
-  const choice = await pickRepo(prompt, await listRepos(), inUse);
-
-  return "repo" in choice
-    ? choice.repo
-    : sshUrl(await createRepo(choice.create.name, choice.create.visibility));
+function cancelSetup(): never {
+  p.cancel("Setup cancelled.");
+  throw new Error("setup cancelled");
 }
 
-async function save(config: Config, settings: { repo: string; skills: SyncedSkill[] }) {
-  const file = Bun.file(config.configPath);
-  const existing = (await file.exists()) ? await file.json() : {};
+function renderRun(run: Awaited<ReturnType<typeof runSync>>) {
+  const output = `${run.status}: ${run.summary}`;
+  if (run.status === "ok") p.log.success(output);
+  else if (run.status === "conflict") p.log.warn(output);
+  else p.log.error(output);
+}
 
-  await mkdir(dirname(config.configPath), { recursive: true });
-  await Bun.write(
-    config.configPath,
-    `${JSON.stringify({ ...existing, ...settings }, null, 2)}\n`,
-  );
-  return await loadConfig();
+function parseInterval(value: string) {
+  const interval = Number(value);
+  if (!Number.isInteger(interval) || interval < 1 || interval > 60) {
+    throw new InvalidArgumentError("must be a whole number from 1 to 60");
+  }
+  if (60 % interval !== 0) {
+    throw new InvalidArgumentError("must divide evenly into 60 (for example 5, 15, 30, or 60)");
+  }
+  return interval;
+}
+
+function parseLimit(value: string) {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new InvalidArgumentError("must be a whole number from 1 to 100");
+  }
+  return limit;
 }
