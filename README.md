@@ -1,310 +1,142 @@
 # skill-sync
 
-Keeps your agent skills in a git repo and pushes them every night. The repo is cloned
-under `~/.config/skill-sync/repos/`, and every agent directory links to that clone —
-so Claude, Codex and the rest read the same files, and editing a skill through any of
-them edits the repo.
+Keep one GitHub repository of agent skills and global instructions in sync across
+Linux and macOS devices.
 
-## Setup
+`skill-sync` keeps a canonical checkout at `~/.skill-sync/repo` and links each
+supported agent to it. An edit made through Claude, Codex, or an Agents-compatible
+tool therefore changes the same file. A background interval job commits those
+changes, integrates remote work with Git's three-way merge, and pushes the result.
 
-```bash
-bun install
-bun src/index.ts setup
-```
+## Install and set up
 
-`setup` is interactive. It finds every skill with a `SKILL.md` under
-`~/.claude/skills`, `~/.agents/skills`, and `~/.codex/skills` and asks which to sync,
-listing each skill **once** with the agents that hold it:
-
-```
-WARN ⚠ personal-code-style is not the same everywhere — you will choose which copy to push
-
-? Which skills should be synced?
-> [ ] personal-code-style (claude · agents  ⚠ contents differ)
-  [ ] showrunner (claude · agents)
-```
-
-Copies are compared by content, not by path, so a skill kept in two places appears
-as one choice. When the copies do differ only one can be the source, so `setup` asks
-which of them wins.
-
-Prompt rows are drawn as a single line in a single colour, so the `⚠` carries the
-warning inside the list; the red belongs to the warning line above it.
-
-It then lists your repos through the `gh` CLI — including an option to create one —
-and asks where the skills should live. There is no OAuth flow of its own; `gh` holds
-the credentials.
-
-Last it asks when to sync — the common rhythms first, the day-by-day choice last,
-the way calendars and job monitors ask it:
-
-```
-? How often should the skills sync?
-> Every hour   recommended, keeps machines in step
-  Every day    at a time you choose
-  Weekdays     Mon–Fri
-  Weekends     Sat & Sun
-  Pick days…   choose them one by one
-```
-
-**Every hour is the default, and it asks nothing else.** Anything less frequent then
-asks for a time, typed, with three common ones offered; it accepts 24-hour `HH:MM`
-and 12-hour `3am` / `3:30pm`. `Pick days…` opens a checkbox per day.
-
-The hourly minute is derived from the machine's hostname — stable, but different on
-each machine, so several of them syncing to one repo do not all arrive at the same
-moment. `status` shows it as `Every hour at :37`.
-
-Several days become one cron entry: Mondays, Wednesdays and Fridays at 09:00 is
-`0 9 * * 1,3,5`, read back as `Mon · Wed · Fri at 09:00`.
-
-## Setting up without the prompts
-
-Every question has a flag, so a machine can be set up with no terminal at all:
+Use it directly:
 
 ```bash
-bun src/index.ts setup \
-  --repo HegarGarcia/skills \
-  --skill ~/.claude/skills/showrunner \
-  --skill ~/.claude/skills/personal-code-style \
-  --cron "0 9 * * 1-5"
+npx skill-sync setup
 ```
 
-| Flag | Answers | Accepts |
-| --- | --- | --- |
-| `--repo`, `-r` | which repo | `owner/name` or any git URL |
-| `--skill`, `-s` | which skills | a path to a skill folder; repeat it for more |
-| `--cron`, `-c` | when | a cron expression |
+Or install the two command aliases globally:
 
-Answer all three and nothing is asked, terminal or not. Answer some and the rest are
-prompted for, which needs a terminal. `--skill` insists on a folder holding a
-`SKILL.md`, so a mistyped path fails at setup rather than pushing an empty folder.
-
-**Day of month and month are not supported**, so both have to be `*`. The minute and
-hour take plain numbers, and the day of week takes `*`, a list like `1,3,5`, or a
-range like `1-5`. Anything else — a day of month, or a step like `*/15` — is refused
-rather than registered as something `status` would then describe wrongly.
-
-Both answers are written to `~/.config/skill-sync/config.json`, which lives outside
-the checkout so the CLI behaves the same wherever you run it from.
-
-The repo holds the skills the way
-[HegarGarcia/skills](https://github.com/HegarGarcia/skills) does:
-
+```bash
+npm install -g skill-sync
+ss setup
 ```
+
+Setup asks for a GitHub repository and a sync interval. It uses the `git` and `gh`
+already installed and authenticated on your machine; skill-sync has no OAuth flow and
+never stores a GitHub token. Run `gh auth login` first if needed.
+
+Because interval jobs have no interactive terminal, the Git credential method chosen
+by `gh` must also work unattended—for example, an HTTPS credential helper or an SSH
+key that does not need a prompt.
+
+For an unattended setup, give every answer as a flag:
+
+```bash
+ss setup --repo your-name/agent-library --branch main --interval 15
+```
+
+The interval can be a whole number that divides evenly into 60, such as 5, 10, 15,
+20, 30, or 60 minutes. This keeps Linux cron and macOS launchd behavior equivalent.
+V1 deliberately uses interval sync only—there is no file watcher or long-running
+daemon.
+
+## Repository layout
+
+The source repository must contain at least one valid skill:
+
+```text
 skills/
-  <skill-name>/
-    SKILL.md        # its frontmatter `description` controls when the agent triggers it
-    ...             # optional CHANGELOG.md, references/, agents/, etc.
+  writing/
+    SKILL.md
+    references/
+global/
+  AGENTS.md       # optional
+  CLAUDE.md       # optional
 ```
 
-A brand-new empty repo works and gets populated on the first sync. Both cloning and
-pushing run unattended, so the machine needs credentials that work without a prompt —
-an SSH key without a passphrase, or a git credential helper. A public repo is also
-worth considering if you want [skills.sh](https://skills.sh) to install these skills
-on machines that do not run skill-sync.
+Each skill directory is linked into:
+
+- `~/.claude/skills/<name>`
+- `~/.agents/skills/<name>`
+- `~/.codex/skills/<name>`
+
+Global files are linked to their matching agent locations. `AGENTS.md` goes to
+`~/.agents/AGENTS.md` and `~/.codex/AGENTS.md`; `CLAUDE.md` goes to
+`~/.claude/CLAUDE.md`.
+
+Setup inspects every destination before changing any of them. A missing path is safe,
+and identical content can be adopted. If any destination contains different content,
+setup stops, lists every collision, and leaves the targets untouched. Move or
+reconcile those paths yourself, then rerun setup.
 
 ## Commands
 
 ```bash
-bun src/index.ts setup         # onboarding: pick skills and a repo, then schedule
-bun src/index.ts start         # resume after a stop
-bun src/index.ts stop          # pause, keeping the configuration
-bun src/index.ts status        # schedule, last sync, and whether it is healthy
-bun src/index.ts sync          # sync now
-bun src/index.ts --help        # also --version, and --help on any command
+ss setup       # connect the repo, create links, and enable interval sync
+ss sync        # sync immediately
+ss logs        # show configuration and recent structured runs
+ss uninstall   # remove the interval job and links owned by skill-sync
 ```
 
-**Run `setup` again to change any of it.** It asks the same questions with your
-current answers filled in — the skills you sync are ticked, the repo you are using is
-selected and hinted `in use`, and the rhythm and time start on what is already
-scheduled — so it doubles as the edit screen. Any answer can be given as a flag
-instead; see [Setting up without the prompts](#setting-up-without-the-prompts).
+`uninstall` always preserves `~/.skill-sync/repo`, `~/.skill-sync/runs.jsonl`, and
+the rest of the local state. It prints their paths so you can inspect or remove them
+deliberately.
 
-A question with no answer and no terminal to ask in is an error rather than a guess.
-On an already configured machine `setup` asks nothing and simply re-registers the
-existing schedule, which is what makes it safe to call from a script.
+## What happens during sync
 
-`stop` is a pause: it unregisters the job but keeps the day and time on record, so
-`start` puts it back where it was. `start` on an unconfigured machine falls back to
-onboarding, and with a repo but no schedule it registers every day at midnight.
+One lock protects the entire lifecycle:
 
-`status` exits non-zero whenever the sync is not going to run as intended — never
-set up, missing from the OS scheduler, a failed or conflicted last run, or no
-successful run in the last 26 hours. A deliberate pause exits zero.
+1. Validate all managed skills and YAML frontmatter.
+2. Commit changes under `skills/` and `global/` in the app-owned checkout.
+3. Fetch and merge the configured remote branch with normal Git three-way behavior.
+4. Validate the merged tree, restore missing owned links, and push.
 
-To call it as `skill-sync` from anywhere, run `bun link` in this directory.
+Non-overlapping changes from multiple devices converge automatically. If the same
+lines overlap, the merge is aborted so agents never see conflict markers, nothing is
+pushed from that device, and `ss logs` gives the exact recovery command:
 
-The commands are defined with [`@bunli/core`](https://bunli.dev) in
-`src/commands.ts`, which supplies help, `--version`, and unknown-command errors.
-Bunli prints its own help and errors as JSON when stdout is not a TTY; the
-commands' own output is plain text either way.
+```bash
+cd ~/.skill-sync/repo
+git merge origin/main
+# resolve the files, then:
+git add -A && git commit
+ss sync
+```
+
+The previous prototype's union merge rule is removed. skill-sync never guesses how
+to combine contradictory prose or duplicate YAML keys.
+
+## Local state and scheduling
+
+Configuration and logs live under `~/.skill-sync/`:
+
+```text
+~/.skill-sync/
+  config.json
+  repo/
+  runs.jsonl
+  scheduler.log
+```
+
+Linux uses the user's crontab. macOS uses
+`~/Library/LaunchAgents/com.skill-sync.sync.plist`. Both invoke the same hidden
+coordinator used by `ss sync`; scheduled runs do not depend on an interactive shell.
+
+For isolated testing, `SKILL_SYNC_HOME` moves the state directory and
+`SKILL_SYNC_AGENT_HOME` moves the projected agent home.
 
 ## Development
 
-The `bunli` toolchain is wired to package.json scripts:
+Node 20.12 or newer is required. Bun is not.
 
 ```bash
-bun run dev      # hot-reload the CLI
-bun run test     # run the test suite
-bun run build    # bundle the CLI into dist/index.js
-bun run release  # version, tag, and publish (not exercised here)
+npm install
+npm run check
+npm run dev -- --help
+npm pack
 ```
 
-`git` work goes through [`simple-git`](https://github.com/steveukx/git-js), and repo
-listing and creation through the `gh` CLI. `rsync` is invoked with `Bun.$`, and the
-links are made with `node:fs`.
-
-## How a sync works
-
-The repo is cloned to `~/.config/skill-sync/repos/<owner>/<repo>`, and **the clone is
-the source of truth**. Each agent directory gets a symlink per synced skill:
-
-```
-~/.claude/skills/showrunner  ->  ~/.config/skill-sync/repos/you/skills/skills/showrunner
-~/.agents/skills/showrunner  ->  (the same)
-~/.codex/skills/showrunner   ->  (the same)
-```
-
-So a sync is: commit whatever changed in the clone — which is whatever you edited
-through any agent — merge the repo, push, and make sure the links are in place. The
-first sync for a skill is the exception: it has nothing to work from, so the folder
-you picked is copied in to seed it.
-
-The clone stays parked on the commit of the last successful sync, marked by the
-`refs/skill-sync/base` ref. That commit is the common ancestor, so commits made to
-the repo from another machine are merged rather than overwritten.
-
-- **Rules added on two machines are both kept.** Skills grow at the end, so two
-  machines each appending a rule change the same line and git would normally stop for
-  a human. The repo therefore carries `skills/**/*.md merge=union`, which tells git to
-  keep both sides' lines. skill-sync adds that line on its first sync, keeping anything
-  the file already had, and every other machine then gets it from the repo.
-
-  The trade is that union never asks. Two machines *rewording the same rule* end up
-  with both wordings, and two machines editing a skill's frontmatter can produce a
-  duplicated key — git reports success either way, so glance at a skill after a busy
-  day on two machines. It applies to markdown under `skills/` only; anything else in a
-  skill still stops for a human, because keeping both halves of a JSON file is never
-  right.
-- **A merge conflict stops the sync.** Nothing is pushed, local skills are left as
-  they are, and `status` reports the conflicting paths. The merge is *aborted* rather
-  than left in place, because every agent reads this clone through a link and none of
-  them should find conflict markers in a skill. That means the way out is to run the
-  merge again yourself, which the message spells out — editing the file and committing
-  it is **not** enough and leaves the sync conflicted on every later run:
-
-  ```bash
-  cd ~/.config/skill-sync/repos/you/skills
-  git merge origin/main     # now the conflict markers are there
-  # fix the marked files
-  git add -A && git commit
-  ```
-- **A picked folder that is not a link and still differs from the clone** cannot be
-  resolved automatically — either side may hold the edit worth keeping. That is
-  reported as `diverged` and nothing is changed. This is what you see when a skill
-  already exists in the repo with different contents than your copy.
-- **A directory in the way of a link is only replaced when it already holds exactly
-  what the clone holds.** Otherwise it has content that was never pushed, so it is
-  left alone and named in the summary.
-- **Everything a skill holds is pushed**, not just its markdown: nested folders,
-  scripts, JSON, dotfiles and binaries, with the executable bit and any symlinks
-  inside the skill preserved. Two things do not travel — an **empty directory**, which
-  git cannot store, and anything the repo's own **`.gitignore`** excludes. The second
-  is easy to miss, so the sync names those files rather than dropping them quietly:
-
-  ```
-  ✓ ok: pushed 1 commit, ⚠ the repo's .gitignore skipped skills/rich/notes.log
-  ```
-
-  The rules are the repo's own, so they are respected rather than overridden — remove
-  the pattern if you want the file synced.
-- **Skills the repo has that you did not select are left alone**, and never linked.
-- **A push that loses a race is retried.** With several machines on one repo, two can
-  push in the same minute; the loser fetches, merges and pushes again rather than
-  failing and waiting an hour.
-
-## Several machines, one repo
-
-Each machine keeps its own config, its own clone and its own schedule, and pushes to
-the same repo. Syncing **every hour** is what makes this work: conflicts need two
-machines to change the same lines *between* syncs, so a shorter gap means far fewer of
-them. The per-machine minute keeps them from arriving together.
-
-Two machines adding rules to the same skill is the ordinary case, and union merging
-absorbs it without asking. What is left over — the same rule reworded on both, or a
-non-markdown file changed on both — reports a conflict and stops, keeping this
-machine's copy, until the merge above is done.
-
-State lives under `${XDG_STATE_HOME:-~/.local/state}/skill-sync`: `state.json`
-holds the last sync record, `schedule.json` the time `start` registered, and
-`cron.log` a line per scheduled run.
-
-## Scheduling
-
-`setup` and `start` register the job with the OS scheduler through `Bun.cron`, so it
-survives reboots and works on Linux (crontab), macOS (launchd), and Windows (Task
-Scheduler). The job itself is `src/scheduled.ts`.
-
-Because there is no API to list registered jobs, the time is recorded in
-`schedule.json`, along with whether it is paused, for `status` to report. On Linux
-`status` also confirms the crontab entry is still there and says so when it has gone
-missing while not paused.
-
-## Configuration
-
-Settings come from `~/.config/skill-sync/config.json` — written by `setup`, or by hand —
-and each one can be overridden by an environment variable, which is useful for
-trying the tool against a throwaway repo. Unknown keys in the file are rejected so
-typos do not pass silently.
-
-| Key | Environment variable | Default | Purpose |
-| --- | --- | --- | --- |
-| `repo` | `SKILL_SYNC_REPO` | — | git remote URL of the skills repo (required) |
-| `skills` | — | `[]` | the skills to sync, as `{ "name", "path" }` entries |
-| `branch` | `SKILL_SYNC_BRANCH` | `main` | branch to sync |
-| `checkout` | — | — | a checkout of the repo you already keep, used instead of cloning |
-
-### Using a checkout you already have
-
-If you already keep the skills repo somewhere and work in it, point `checkout` at it
-and skill-sync will use that rather than cloning a second copy — two clones of one repo
-both linked from agent directories is a good way to lose an edit:
-
-```json
-{
-  "repo": "git@github.com:you/skills.git",
-  "checkout": "~/dev/skills",
-  "skills": [{ "name": "showrunner", "path": "~/dev/skills/skills/showrunner" }]
-}
-```
-
-Point the skills at that checkout too, and there is nothing to copy: the files the
-agents read, the files you edit, and the files that get pushed are all the same ones.
-
-A checkout you name is treated as yours. It is never created and never cleaned, so
-uncommitted work and untracked files are left alone, and skill-sync refuses to run if
-the path is not a git checkout or if its `origin` is a different repo.
-
-`setup` writes `skills` for you, but it is plain JSON and `path` accepts a leading
-`~`, so a skill kept outside the standard agent directories can be added by hand:
-
-```json
-{
-  "repo": "git@github.com:you/skills.git",
-  "skills": [{ "name": "showrunner", "path": "~/.claude/skills/showrunner" }]
-}
-```
-
-`SKILL_SYNC_HOME` moves the config directory itself, which also moves the clones;
-it defaults to `${XDG_CONFIG_HOME:-~/.config}/skill-sync`. `XDG_STATE_HOME` moves the
-state directory. `status` prints the config, clone and state paths.
-
-## Tests
-
-```bash
-bun test
-```
-
-The sync tests run against a throwaway bare repo in a temp directory, so they
-need no network access or configuration.
+The integration tests use temporary local Git repositories and do not need network
+access or GitHub credentials.
