@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { link, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 const INCOMPLETE_LOCK_GRACE_MS = 10_000;
 type LockOwner = { pid: number; startedAt: string; token: string };
@@ -9,18 +9,19 @@ export async function withLock<T>(path: string, operation: () => Promise<T>): Pr
   await mkdir(dirname(path), { recursive: true });
   await clearStaleLock(path);
   const token = randomUUID();
-  const handle = await open(path, "wx").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "EEXIST") throw new Error("another skill-sync run is already active");
-    throw error;
-  });
-
+  const temporary = join(dirname(path), `.${basename(path)}.${token}.tmp`);
   try {
-    await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), token }));
-  } catch (error) {
-    await rm(path, { force: true });
-    throw error;
+    await writeFile(
+      temporary,
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), token }),
+      { flag: "wx", mode: 0o600 },
+    );
+    await link(temporary, path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "EEXIST") throw new Error("another skill-sync run is already active");
+      throw error;
+    });
   } finally {
-    await handle.close();
+    await rm(temporary, { force: true });
   }
   try {
     return await operation();

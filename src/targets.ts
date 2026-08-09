@@ -105,16 +105,16 @@ async function fingerprint(path: string) {
   const info = await lstat(path);
   const hash = createHash("sha256");
   if (info.isFile()) {
-    hash.update(`file:${info.mode & 0o111}\0`);
-    hash.update(await readFile(path));
+    hashFields(hash, "file", String(info.mode & 0o111), await readFile(path));
     return hash.digest("hex");
   }
   if (!info.isDirectory()) {
-    hash.update(info.isSymbolicLink() ? `link:${await readlink(path)}` : "special");
+    if (info.isSymbolicLink()) hashFields(hash, "link", await readlink(path));
+    else hashFields(hash, "special");
     return hash.digest("hex");
   }
 
-  hash.update("directory\0");
+  hashFields(hash, "directory");
   await fingerprintDirectory(path, path, hash);
   return hash.digest("hex");
 }
@@ -126,17 +126,26 @@ async function fingerprintDirectory(root: string, directory: string, hash: Retur
     const path = join(directory, entry.name);
     const name = relative(root, path);
     if (entry.isDirectory()) {
-      hash.update(`directory:${name}\0`);
+      hashFields(hash, "directory", name);
       await fingerprintDirectory(root, path, hash);
     } else if (entry.isFile()) {
       const info = await lstat(path);
-      hash.update(`file:${info.mode & 0o111}:${name}\0`);
-      hash.update(await readFile(path));
+      hashFields(hash, "file", String(info.mode & 0o111), name, await readFile(path));
     } else if (entry.isSymbolicLink()) {
-      hash.update(`link:${name}:${await readlink(path)}\0`);
+      hashFields(hash, "link", name, await readlink(path));
     } else {
-      hash.update(`special:${name}\0`);
+      hashFields(hash, "special", name);
     }
+  }
+}
+
+function hashFields(hash: ReturnType<typeof createHash>, ...fields: Array<string | Buffer>) {
+  for (const field of fields) {
+    const contents = typeof field === "string" ? Buffer.from(field) : field;
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(contents.length));
+    hash.update(length);
+    hash.update(contents);
   }
 }
 
