@@ -29,11 +29,35 @@ describe("local run state", () => {
   it("does not steal a fresh incomplete lock and recovers it after the grace period", async () => {
     const root = await tempRoot();
     const path = join(root, "sync.lock");
-    await writeFile(path, JSON.stringify({ startedAt: "unknown" }));
+    const broken = join(path, "broken-candidate");
+    await mkdir(path);
+    await writeFile(broken, JSON.stringify({ startedAt: "unknown" }));
     await expect(withLock(path, async () => "too soon")).rejects.toThrow("already active");
     const stale = new Date(Date.now() - 20_000);
-    await utimes(path, stale, stale);
+    await utimes(broken, stale, stale);
     await expect(withLock(path, async () => "ok")).resolves.toBe("ok");
+  });
+
+  it("never overlaps contenders that concurrently clean the same stale owner", async () => {
+    const root = await tempRoot();
+    const path = join(root, "sync.lock");
+    await mkdir(path);
+    await writeFile(
+      join(path, "stale-owner"),
+      JSON.stringify({ pid: 2_147_483_647, startedAt: "2026-08-09T00:00:00.000Z", token: "stale" }),
+    );
+    let running = 0;
+    let maximum = 0;
+    const operation = () => withLock(path, async () => {
+      running += 1;
+      maximum = Math.max(maximum, running);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      running -= 1;
+    });
+
+    await Promise.allSettled([operation(), operation()]);
+    expect(maximum).toBeLessThanOrEqual(1);
+    await expect(withLock(path, async () => "next")).resolves.toBe("next");
   });
 
   it("reads newest valid structured runs and ignores damaged lines", async () => {
