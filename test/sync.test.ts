@@ -73,10 +73,15 @@ describe("Git synchronization", () => {
   });
 
   it("rejects a clean merge that would leave no valid skills", async () => {
-    const { remote } = await createRemote();
+    const { remote, seed } = await createRemote();
+    await writeFile(join(seed, "notes.txt"), "original notes\n");
+    await git(seed, "add", "notes.txt");
+    await git(seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "add notes");
+    await git(seed, "push", "origin", "main");
     const device = await deviceConfig(remote);
     await runSync(device.config);
     await writeFile(join(device.config.repoDir, "global", "AGENTS.md"), "local global edit\n");
+    await writeFile(join(device.config.repoDir, "notes.txt"), "private local notes\n");
 
     const other = join(await tempRoot(), "other");
     await git(join(other, ".."), "clone", remote, other);
@@ -88,6 +93,7 @@ describe("Git synchronization", () => {
     expect(result.status).toBe("conflict");
     expect(result.summary).toContain("invalid managed content");
     expect(await readFile(join(device.config.repoDir, "skills", "writing", "SKILL.md"), "utf8")).toContain("# Writing");
+    expect(await readFile(join(device.config.repoDir, "notes.txt"), "utf8")).toBe("private local notes\n");
   });
 
   it("does not commit unrelated files from the application-owned checkout", async () => {
@@ -99,6 +105,20 @@ describe("Git synchronization", () => {
     const result = await runSync(await loadConfig(device.env));
     expect(result.status).toBe("ok");
     await expect(git(device.root, "--git-dir", remote, "show", "main:notes.txt")).rejects.toThrow();
+  });
+
+  it("does not commit an unrelated file that was already staged", async () => {
+    const { remote } = await createRemote();
+    const device = await deviceConfig(remote);
+    await runSync(device.config);
+    await writeFile(join(device.config.repoDir, "notes.txt"), "private staged scratch\n");
+    await git(device.config.repoDir, "add", "notes.txt");
+    await writeFile(join(device.config.repoDir, "global", "AGENTS.md"), "managed edit\n");
+
+    const result = await runSync(await loadConfig(device.env));
+    expect(result.status).toBe("ok");
+    await expect(git(device.root, "--git-dir", remote, "show", "main:notes.txt")).rejects.toThrow();
+    expect((await git(device.config.repoDir, "diff", "--cached", "--name-only")).stdout).toBe("notes.txt");
   });
 
   it("names managed files excluded by the repository's ignore rules", async () => {

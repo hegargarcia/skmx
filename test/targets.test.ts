@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { preflightTargets, reconcileTargets, removeOwnedTargets } from "../src/targets.ts";
@@ -59,5 +59,17 @@ describe("target projection", () => {
     await writeFile(target, "user replacement\n");
     expect(await removeOwnedTargets(repo, [target])).toEqual([]);
     expect(await readFile(target, "utf8")).toBe("user replacement\n");
+  });
+
+  it("treats nested symlinks as content when checking for collisions", async () => {
+    const { repo, home } = await fixture();
+    const target = join(home, ".claude", "skills", "writing");
+    await mkdir(target, { recursive: true });
+    await writeFile(join(target, "SKILL.md"), "# Writing\n");
+    await symlink("SKILL.md", join(target, "local-reference"));
+
+    const result = await reconcileTargets(repo, home);
+    expect(result.blocked.map((item) => item.target)).toContain(target);
+    expect(await readlink(join(target, "local-reference"))).toBe("SKILL.md");
   });
 });

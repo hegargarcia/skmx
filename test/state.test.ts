@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { withLock } from "../src/lock.ts";
@@ -26,10 +26,13 @@ describe("local run state", () => {
     await expect(withLock(path, async () => "next")).resolves.toBe("next");
   });
 
-  it("recovers a malformed stale lock", async () => {
+  it("does not steal a fresh incomplete lock and recovers it after the grace period", async () => {
     const root = await tempRoot();
     const path = join(root, "sync.lock");
     await writeFile(path, JSON.stringify({ startedAt: "unknown" }));
+    await expect(withLock(path, async () => "too soon")).rejects.toThrow("already active");
+    const stale = new Date(Date.now() - 20_000);
+    await utimes(path, stale, stale);
     await expect(withLock(path, async () => "ok")).resolves.toBe("ok");
   });
 

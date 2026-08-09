@@ -1,7 +1,8 @@
-import { configPaths, saveConfig, type ConfigFile } from "./config.ts";
+import { access } from "node:fs/promises";
+import { configPaths, loadConfig, saveConfig, type ConfigFile } from "./config.ts";
 import { assertPrerequisites, resolveRepo } from "./github.ts";
 import { prepareRepo } from "./repository.ts";
-import { installSchedule } from "./scheduler.ts";
+import { installSchedule, uninstallSchedule } from "./scheduler.ts";
 import { runSync } from "./sync.ts";
 import { preflightTargets } from "./targets.ts";
 import { validateManagedTree } from "./validation.ts";
@@ -15,6 +16,10 @@ export type SetupOptions = {
 export async function setup(options: SetupOptions, env: NodeJS.ProcessEnv = process.env) {
   await assertPrerequisites();
   const paths = configPaths(env);
+  const existing = await access(paths.configPath).then(() => loadConfig(env)).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
   const repo = await resolveRepo(options.repo);
   await prepareRepo(repo, options.branch, paths.repoDir);
   await validateManagedTree(paths.repoDir);
@@ -32,10 +37,14 @@ export async function setup(options: SetupOptions, env: NodeJS.ProcessEnv = proc
     repo,
     branch: options.branch,
     intervalMinutes: options.intervalMinutes,
-    links: [],
+    links: existing?.links ?? [],
   };
   const config = await saveConfig(file, env);
   const run = await runSync(config, "setup");
-  const scheduler = run.status === "ok" ? await installSchedule(config) : null;
+  if (run.status !== "ok") {
+    await uninstallSchedule(config);
+    return { config, run, scheduler: null };
+  }
+  const scheduler = await installSchedule(config);
   return { config, run, scheduler };
 }

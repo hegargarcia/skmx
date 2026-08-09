@@ -8,6 +8,7 @@ const CRON_MARKER = "# skill-sync managed job";
 const PACKAGE_REFERENCE = `${packageJson.name}@${packageJson.version}`;
 
 export type SupportedPlatform = "linux" | "darwin";
+export type SchedulerEnvironment = Record<string, string>;
 
 export async function installSchedule(
   config: Config,
@@ -15,11 +16,12 @@ export async function installSchedule(
 ) {
   assertSupportedPlatform(platform);
   const command = await scheduledCommand();
+  const environment = schedulerEnvironment(config);
   if (platform === "linux") {
-    await installCron(config.intervalMinutes, command, config.schedulerLogPath);
+    await installCron(config.intervalMinutes, command, config.schedulerLogPath, environment);
     return "cron" as const;
   }
-  await installLaunchAgent(config, command);
+  await installLaunchAgent(config, command, environment);
   return "launchd" as const;
 }
 
@@ -32,23 +34,43 @@ export async function uninstallSchedule(
 
   const existed = await access(config.launchAgentPath).then(() => true).catch(() => false);
   if (!existed) return false;
-  await execa("launchctl", ["bootout", `gui/${process.getuid?.() ?? 0}`, config.launchAgentPath], {
+  const result = await execa("launchctl", ["bootout", `gui/${process.getuid?.() ?? 0}`, config.launchAgentPath], {
     reject: false,
   });
+  if (result.exitCode !== 0 && !/no such process|could not find service/i.test(result.stderr)) {
+    throw new Error(`could not unload the launch agent: ${result.stderr.trim() || "launchctl failed"}`);
+  }
   await rm(config.launchAgentPath, { force: true });
   return true;
 }
 
-export function cronEntry(intervalMinutes: number, command: string[], logPath: string) {
+export function cronEntry(
+  intervalMinutes: number,
+  command: string[],
+  logPath: string,
+  environment: SchedulerEnvironment = {},
+) {
   assertInterval(intervalMinutes);
   const expression = intervalMinutes === 60 ? "0 * * * *" : `*/${intervalMinutes} * * * *`;
-  return `${expression} ${command.map(shellQuote).join(" ")} >> ${shellQuote(logPath)} 2>&1 ${CRON_MARKER}`;
+  const variables = Object.entries(environment)
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(" ");
+  const invocation = [variables, command.map(shellQuote).join(" ")].filter(Boolean).join(" ");
+  return `${expression} ${invocation} >> ${shellQuote(logPath)} 2>&1 ${CRON_MARKER}`;
 }
 
-export function launchAgentPlist(intervalMinutes: number, command: string[], logPath: string) {
+export function launchAgentPlist(
+  intervalMinutes: number,
+  command: string[],
+  logPath: string,
+  environment: SchedulerEnvironment = {},
+) {
   assertInterval(intervalMinutes);
   const argumentsXml = command
     .map((argument) => `      <string>${escapeXml(argument)}</string>`)
+    .join("\n");
+  const environmentXml = Object.entries(environment)
+    .map(([name, value]) => `      <key>${escapeXml(name)}</key>\n      <string>${escapeXml(value)}</string>`)
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -60,6 +82,10 @@ export function launchAgentPlist(intervalMinutes: number, command: string[], log
     <array>
 ${argumentsXml}
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+${environmentXml}
+    </dict>
     <key>StartInterval</key>
     <integer>${intervalMinutes * 60}</integer>
     <key>RunAtLoad</key>
@@ -73,10 +99,16 @@ ${argumentsXml}
 `;
 }
 
-async function installCron(intervalMinutes: number, command: string[], logPath: string) {
+async function installCron(
+  intervalMinutes: number,
+  command: string[],
+  logPath: string,
+  environment: SchedulerEnvironment,
+) {
   const current = await execa("crontab", ["-l"], { reject: false });
-  const lines = current.exitCode === 0 ? withoutManagedCron(current.stdout) : [];
-  lines.push(cronEntry(intervalMinutes, command, logPath));
+  const lines = parseCrontabList(current.exitCode, current.stdout, current.stderr)
+    .filter((line) => !isManagedCronLine(line));
+  lines.push(cronEntry(intervalMinutes, command, logPath, environment));
   const result = await execa("crontab", ["-"], { input: `${lines.join("\n")}\n`, reject: false });
   if (result.exitCode !== 0) {
     throw new Error(`could not install the cron job: ${result.stderr.trim() || "crontab failed"}`);
@@ -85,8 +117,9 @@ async function installCron(intervalMinutes: number, command: string[], logPath: 
 
 async function removeCron() {
   const current = await execa("crontab", ["-l"], { reject: false });
-  if (current.exitCode !== 0 || !current.stdout.includes(CRON_MARKER)) return false;
-  const lines = withoutManagedCron(current.stdout);
+  const existing = parseCrontabList(current.exitCode, current.stdout, current.stderr);
+  if (!existing.some(isManagedCronLine)) return false;
+  const lines = existing.filter((line) => !isManagedCronLine(line));
   const result = await execa("crontab", ["-"], { input: `${lines.join("\n")}\n`, reject: false });
   if (result.exitCode !== 0) {
     throw new Error(`could not remove the cron job: ${result.stderr.trim() || "crontab failed"}`);
@@ -94,18 +127,34 @@ async function removeCron() {
   return true;
 }
 
-function withoutManagedCron(contents: string) {
+export function parseCrontabList(
+  exitCode: number | undefined,
+  stdout: string,
+  stderr: string,
+) {
+  if (exitCode !== 0 && !/no crontab for/i.test(stderr)) {
+    throw new Error(`could not read the existing crontab: ${stderr.trim() || "crontab -l failed"}`);
+  }
+  const contents = exitCode === 0 ? stdout : "";
   const normalized = contents.endsWith("\n") ? contents.slice(0, -1) : contents;
   if (normalized === "") return [];
-  return normalized.split("\n").filter((line) => !line.includes(CRON_MARKER));
+  return normalized.split("\n");
 }
 
-async function installLaunchAgent(config: Config, command: string[]) {
+function isManagedCronLine(line: string) {
+  return line.trimEnd().endsWith(CRON_MARKER);
+}
+
+async function installLaunchAgent(
+  config: Config,
+  command: string[],
+  environment: SchedulerEnvironment,
+) {
   await mkdir(dirname(config.launchAgentPath), { recursive: true });
   await mkdir(dirname(config.schedulerLogPath), { recursive: true });
   await writeFile(
     config.launchAgentPath,
-    launchAgentPlist(config.intervalMinutes, command, config.schedulerLogPath),
+    launchAgentPlist(config.intervalMinutes, command, config.schedulerLogPath, environment),
     "utf8",
   );
   const domain = `gui/${process.getuid?.() ?? 0}`;
@@ -119,11 +168,22 @@ async function installLaunchAgent(config: Config, command: string[]) {
 }
 
 async function scheduledCommand() {
-  if (process.env.SKILL_SYNC_SCHEDULE_COMMAND) {
-    return JSON.parse(process.env.SKILL_SYNC_SCHEDULE_COMMAND) as string[];
-  }
   const npx = await findNpx();
   return [npx, "--yes", PACKAGE_REFERENCE, "_scheduled"];
+}
+
+function schedulerEnvironment(config: Config): SchedulerEnvironment {
+  const path = [
+    dirname(process.execPath),
+    ...(process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin").split(":"),
+  ]
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .join(":");
+  return {
+    PATH: path,
+    SKILL_SYNC_HOME: config.home,
+    SKILL_SYNC_AGENT_HOME: config.agentHome,
+  };
 }
 
 async function findNpx() {
