@@ -178,11 +178,35 @@ function hashFields(hash: ReturnType<typeof createHash>, ...fields: Array<string
 async function pointsInto(target: string, repoDir: string) {
   const info = await lstat(target).catch(() => null);
   if (!info?.isSymbolicLink()) return false;
-  const link = await readlink(target);
-  const destination = await realpath(target).catch(() => resolve(dirname(target), link));
+  const destination = await resolveLinkDestination(target);
+  if (destination === null) return false;
   const canonicalRepo = await realpath(repoDir).catch(() => resolve(repoDir));
   const path = relative(canonicalRepo, destination);
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
+async function resolveLinkDestination(target: string) {
+  const link = await readlink(target);
+  const destination = resolve(dirname(target), link);
+  return realpath(target).catch(async () => {
+    let existingPath = destination;
+    const missingSegments: string[] = [];
+
+    while (true) {
+      const canonicalPath = await realpath(existingPath).catch(() => null);
+      if (canonicalPath !== null) return join(canonicalPath, ...missingSegments.reverse());
+
+      const pathState = await lstat(existingPath)
+        .then(() => "exists" as const)
+        .catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? "missing" as const : "unknown" as const);
+      if (pathState !== "missing") return null;
+
+      const parent = dirname(existingPath);
+      if (parent === existingPath) return null;
+      missingSegments.push(basename(existingPath));
+      existingPath = parent;
+    }
+  });
 }
 
 const exists = (path: string) => lstat(path).then(() => true).catch(() => false);

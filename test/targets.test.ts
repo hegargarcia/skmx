@@ -39,23 +39,25 @@ describe("target projection", () => {
   });
 
   it("repoints an owned Claude link when dedicated instructions are added or removed", async () => {
-    const { repo, home } = await fixture();
+    const { root, repo, home } = await fixture();
+    const aliasedRepo = join(root, "repo-alias");
+    await symlink(repo, aliasedRepo, "dir");
     await rm(join(repo, "CLAUDE.md"));
-    const shared = await reconcileTargets(repo, home);
+    const shared = await reconcileTargets(aliasedRepo, home);
     const target = join(home, ".claude", "CLAUDE.md");
-    expect(await readlink(target)).toBe(join(repo, "AGENTS.md"));
+    expect(await readlink(target)).toBe(join(aliasedRepo, "AGENTS.md"));
 
     await writeFile(join(repo, "CLAUDE.md"), "# Dedicated Claude\n");
-    expect(await preflightTargets(repo, home, shared.links)).toEqual([]);
-    const dedicated = await reconcileTargets(repo, home, shared.links);
+    expect(await preflightTargets(aliasedRepo, home, shared.links)).toEqual([]);
+    const dedicated = await reconcileTargets(aliasedRepo, home, shared.links);
     expect(dedicated.blocked).toEqual([]);
-    expect(await readlink(target)).toBe(join(repo, "CLAUDE.md"));
+    expect(await readlink(target)).toBe(join(aliasedRepo, "CLAUDE.md"));
 
     await rm(join(repo, "CLAUDE.md"));
-    expect(await preflightTargets(repo, home, dedicated.links)).toEqual([]);
-    const fallback = await reconcileTargets(repo, home, dedicated.links);
+    expect(await preflightTargets(aliasedRepo, home, dedicated.links)).toEqual([]);
+    const fallback = await reconcileTargets(aliasedRepo, home, dedicated.links);
     expect(fallback.blocked).toEqual([]);
-    expect(await readlink(target)).toBe(join(repo, "AGENTS.md"));
+    expect(await readlink(target)).toBe(join(aliasedRepo, "AGENTS.md"));
   });
 
   it("reports all different existing content before changing any target", async () => {
@@ -87,6 +89,21 @@ describe("target projection", () => {
     await writeFile(target, "user replacement\n");
     expect(await removeOwnedTargets(repo, [target])).toEqual([]);
     expect(await readFile(target, "utf8")).toBe("user replacement\n");
+  });
+
+  it("does not claim a link through an existing but unresolved symlink", async () => {
+    const { root, repo, home } = await fixture();
+    const directTarget = join(home, ".agents", "AGENTS.md");
+    const nestedTarget = join(home, ".codex", "AGENTS.md");
+    await mkdir(join(home, ".agents"), { recursive: true });
+    await mkdir(join(home, ".codex"), { recursive: true });
+    await symlink(join(root, "outside"), join(repo, "escape"), "dir");
+    await symlink(join(repo, "escape"), directTarget, "file");
+    await symlink(join(repo, "escape", "missing"), nestedTarget, "file");
+
+    expect(await removeOwnedTargets(repo, [directTarget, nestedTarget])).toEqual([]);
+    expect((await lstat(directTarget)).isSymbolicLink()).toBe(true);
+    expect((await lstat(nestedTarget)).isSymbolicLink()).toBe(true);
   });
 
   it("repoints byte-identical symlinks and leaves unrelated links alone", async () => {
