@@ -105,27 +105,48 @@ async function fingerprint(path: string) {
   const info = await lstat(path);
   const hash = createHash("sha256");
   if (info.isFile()) {
-    hash.update(await readFile(path));
+    hashFields(hash, "file", String(info.mode & 0o111), await readFile(path));
+    return hash.digest("hex");
+  }
+  if (!info.isDirectory()) {
+    if (info.isSymbolicLink()) hashFields(hash, "link", await readlink(path));
+    else hashFields(hash, "special");
     return hash.digest("hex");
   }
 
-  const files = await walk(path);
-  for (const file of files) {
-    hash.update(relative(path, file));
-    hash.update(await readFile(file));
-  }
+  hashFields(hash, "directory");
+  await fingerprintDirectory(path, path, hash);
   return hash.digest("hex");
 }
 
-async function walk(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const nested = await Promise.all(
-    entries.map((entry) => {
-      const path = join(directory, entry.name);
-      return entry.isDirectory() ? walk(path) : Promise.resolve(entry.isFile() ? [path] : []);
-    }),
-  );
-  return nested.flat().sort();
+async function fingerprintDirectory(root: string, directory: string, hash: ReturnType<typeof createHash>) {
+  const entries = (await readdir(directory, { withFileTypes: true }))
+    .sort((one, two) => one.name.localeCompare(two.name));
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    const name = relative(root, path);
+    if (entry.isDirectory()) {
+      hashFields(hash, "directory", name);
+      await fingerprintDirectory(root, path, hash);
+    } else if (entry.isFile()) {
+      const info = await lstat(path);
+      hashFields(hash, "file", String(info.mode & 0o111), name, await readFile(path));
+    } else if (entry.isSymbolicLink()) {
+      hashFields(hash, "link", name, await readlink(path));
+    } else {
+      hashFields(hash, "special", name);
+    }
+  }
+}
+
+function hashFields(hash: ReturnType<typeof createHash>, ...fields: Array<string | Buffer>) {
+  for (const field of fields) {
+    const contents = typeof field === "string" ? Buffer.from(field) : field;
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(contents.length));
+    hash.update(length);
+    hash.update(contents);
+  }
 }
 
 async function pointsInto(target: string, repoDir: string) {
@@ -133,7 +154,8 @@ async function pointsInto(target: string, repoDir: string) {
   if (!info?.isSymbolicLink()) return false;
   const link = await readlink(target);
   const destination = await realpath(target).catch(() => resolve(dirname(target), link));
-  const path = relative(await realpath(repoDir), destination);
+  const canonicalRepo = await realpath(repoDir).catch(() => resolve(repoDir));
+  const path = relative(canonicalRepo, destination);
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 

@@ -129,9 +129,18 @@ async function commitManagedChanges(git: SimpleGit, repoDir: string) {
   const globalExists = await access(join(repoDir, "global")).then(() => true).catch(() => false);
   const globalTracked = (await git.raw(["ls-files", "--", "global"])).trim() !== "";
   if (globalExists || globalTracked) await git.add(["-A", "--", "global"]);
-  const staged = await git.diff(["--cached", "--name-only", "--", ...MANAGED_PATHS]);
-  if (staged.trim() === "") return false;
-  await git.commit(`sync: ${hostname()} ${new Date().toISOString()}`);
+  const staged = (await git.diff(["--cached", "--name-only", "--no-renames", "-z", "--", ...MANAGED_PATHS]))
+    .split("\0")
+    .filter(Boolean);
+  if (staged.length === 0) return false;
+  await git.raw([
+    "commit",
+    "--only",
+    "-m",
+    `sync: ${hostname()} ${new Date().toISOString()}`,
+    "--",
+    ...staged,
+  ]);
   return true;
 }
 
@@ -158,7 +167,7 @@ async function integrateRemote(git: SimpleGit, remoteBranch: string, repoDir: st
   try {
     await validateManagedTree(repoDir);
   } catch (error) {
-    if (before !== null) await git.reset(["--hard", before]);
+    if (before !== null) await git.reset(["--merge", before]);
     return {
       status: "conflict",
       summary: `remote integration produced invalid managed content: ${describeError(error)}`,

@@ -125,7 +125,9 @@ Linux uses the user's crontab. macOS uses
 coordinator used by `ss sync`; scheduled runs do not depend on an interactive shell.
 
 For isolated testing, `SKILL_SYNC_HOME` moves the state directory and
-`SKILL_SYNC_AGENT_HOME` moves the projected agent home.
+`SKILL_SYNC_AGENT_HOME` moves the projected agent home. Setup records those values
+and the current Node path in the background job. Run `ss setup` again after upgrading
+skill-sync or moving your Node installation so the registered job uses the new tool.
 
 ## Development
 
