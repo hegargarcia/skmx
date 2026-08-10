@@ -118,7 +118,7 @@ async function createLink(source: string, target: string) {
 }
 
 async function replaceLink(source: string, target: string) {
-  const temporary = join(dirname(target), `.${basename(target)}.skill-sync-${randomUUID()}`);
+  const temporary = join(dirname(target), `.${basename(target)}.skm-${randomUUID()}`);
   await createLink(source, temporary);
   try {
     await rename(temporary, target);

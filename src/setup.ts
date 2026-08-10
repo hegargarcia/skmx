@@ -29,7 +29,7 @@ export async function setup(options: SetupOptions, env: NodeJS.ProcessEnv = proc
     const targets = blocked.map((item) => `  - ${item.target}`).join("\n");
     throw new Error(
       `setup found different existing content and did not change any target:\n${targets}\n` +
-        "move or reconcile those paths, then run `ss setup` again",
+        "move or reconcile those paths, then run `skm setup` again",
     );
   }
 

@@ -4,7 +4,7 @@ import { execa } from "execa";
 import packageJson from "../package.json" with { type: "json" };
 import type { Config } from "./config.ts";
 
-const CRON_MARKER = "# skill-sync managed job";
+const CRON_MARKER = "# skm managed job";
 const PACKAGE_REFERENCE = `${packageJson.name}@${packageJson.version}`;
 
 export type SupportedPlatform = "linux" | "darwin";
@@ -77,7 +77,7 @@ export function launchAgentPlist(
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>com.skill-sync.sync</string>
+    <string>com.skm.sync</string>
     <key>ProgramArguments</key>
     <array>
 ${argumentsXml}
@@ -181,8 +181,8 @@ function schedulerEnvironment(config: Config): SchedulerEnvironment {
     .join(":");
   return {
     PATH: path,
-    SKILL_SYNC_HOME: config.home,
-    SKILL_SYNC_AGENT_HOME: config.agentHome,
+    SKM_HOME: config.home,
+    SKM_AGENT_HOME: config.agentHome,
   };
 }
 

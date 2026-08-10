@@ -6,7 +6,7 @@ import { saveConfig } from "../src/config.ts";
 
 export const tempRoots: string[] = [];
 
-export async function tempRoot(prefix = "skill-sync-") {
+export async function tempRoot(prefix = "skm-") {
   const root = await mkdtemp(join(tmpdir(), prefix));
   tempRoots.push(root);
   return root;
@@ -38,8 +38,8 @@ export async function deviceConfig(remote: string, root?: string) {
   const deviceRoot = root ?? await tempRoot();
   const env = {
     ...process.env,
-    SKILL_SYNC_HOME: join(deviceRoot, "state"),
-    SKILL_SYNC_AGENT_HOME: join(deviceRoot, "agent-home"),
+    SKM_HOME: join(deviceRoot, "state"),
+    SKM_AGENT_HOME: join(deviceRoot, "agent-home"),
   };
   const config = await saveConfig({ repo: remote, branch: "main", intervalMinutes: 15, links: [] }, env);
   return { root: deviceRoot, env, config };

@@ -37,8 +37,8 @@ describe("repeat setup", () => {
     const root = await tempRoot();
     const env = {
       ...process.env,
-      SKILL_SYNC_HOME: join(root, "state"),
-      SKILL_SYNC_AGENT_HOME: join(root, "agent-home"),
+      SKM_HOME: join(root, "state"),
+      SKM_AGENT_HOME: join(root, "agent-home"),
     };
     await saveConfig(
       { repo: "/repo", branch: "main", intervalMinutes: 60, links: [join(root, "owned-link")] },

@@ -193,7 +193,7 @@ async function abortConflict(git: SimpleGit, error: unknown, repoDir: string, re
     status: "conflict",
     summary:
       `merge conflict in ${detail}; nothing was pushed. Resolve it in ${repoDir} with ` +
-      `\`git merge ${remoteBranch}\`, commit the resolution, then run \`ss sync\` again`,
+      `\`git merge ${remoteBranch}\`, commit the resolution, then run \`skm sync\` again`,
     commit: await currentCommit(git),
   } as const;
 }

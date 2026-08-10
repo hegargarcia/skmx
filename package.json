@@ -1,21 +1,20 @@
 {
-  "name": "skill-sync",
+  "name": "skmx",
   "version": "0.1.0",
   "description": "Keep agent skills and global instructions in sync through GitHub",
   "type": "module",
   "private": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hegargarcia/skill-sync.git"
+    "url": "git+https://github.com/hegargarcia/skm.git"
   },
-  "bugs": "https://github.com/hegargarcia/skill-sync/issues",
-  "homepage": "https://github.com/hegargarcia/skill-sync#readme",
+  "bugs": "https://github.com/hegargarcia/skm/issues",
+  "homepage": "https://github.com/hegargarcia/skm#readme",
   "publishConfig": {
     "access": "public"
   },
   "bin": {
-    "skill-sync": "dist/index.js",
-    "ss": "dist/index.js"
+    "skm": "dist/index.js"
   },
   "files": [
     "dist",

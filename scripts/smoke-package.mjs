@@ -6,19 +6,19 @@ import { promisify } from "node:util";
 import packageJson from "../package.json" with { type: "json" };
 
 const run = promisify(execFile);
-const root = await mkdtemp(join(tmpdir(), "skill-sync-package-"));
+const root = await mkdtemp(join(tmpdir(), "skm-package-"));
 
 try {
   const packed = await run("npm", ["pack", "--ignore-scripts", "--pack-destination", root]);
   const filename = packed.stdout.trim().split("\n").at(-1);
   if (!filename) throw new Error("npm pack did not return a tarball name");
   const tarball = join(root, filename);
-  const npx = await run("npx", ["--yes", "--package", tarball, "skill-sync", "--version"]);
+  const npx = await run("npx", ["--yes", "--package", tarball, "skm", "--version"]);
   if (npx.stdout.trim() !== packageJson.version) throw new Error(`unexpected npx version: ${npx.stdout}`);
 
   const prefix = join(root, "global");
   await run("npm", ["install", "--global", "--prefix", prefix, tarball]);
-  for (const command of ["ss", "skill-sync"]) {
+  for (const command of ["skm"]) {
     const result = await run(join(prefix, "bin", command), ["--version"]);
     if (result.stdout.trim() !== packageJson.version) {
       throw new Error(`unexpected ${command} version: ${result.stdout}`);
@@ -29,13 +29,13 @@ try {
   const npxEnvironment = await scheduledEnvironment(root, "npx-device", remote);
   const npxRun = await run(
     "npx",
-    ["--yes", "--package", tarball, "skill-sync", "_scheduled"],
+    ["--yes", "--package", tarball, "skm", "_scheduled"],
     { env: npxEnvironment },
   );
   if (!npxRun.stdout.includes(" ok:")) throw new Error(`npx scheduled run failed: ${npxRun.stdout}`);
 
   const globalEnvironment = await scheduledEnvironment(root, "global-device", remote);
-  const globalRun = await run(join(prefix, "bin", "ss"), ["_scheduled"], {
+  const globalRun = await run(join(prefix, "bin", "skm"), ["_scheduled"], {
     env: globalEnvironment,
   });
   if (!globalRun.stdout.includes(" ok:")) {
@@ -74,7 +74,7 @@ async function scheduledEnvironment(root, name, remote) {
   return {
     ...process.env,
     NO_COLOR: "1",
-    SKILL_SYNC_HOME: state,
-    SKILL_SYNC_AGENT_HOME: join(root, name, "agent-home"),
+    SKM_HOME: state,
+    SKM_AGENT_HOME: join(root, name, "agent-home"),
   };
 }

@@ -35,16 +35,16 @@ export type Config = ConfigFile & {
 };
 
 export function configPaths(env: NodeJS.ProcessEnv = process.env) {
-  const home = resolve(env.SKILL_SYNC_HOME ?? join(homedir(), ".skill-sync"));
+  const home = resolve(env.SKM_HOME ?? join(homedir(), ".skm"));
   return {
     home,
     repoDir: join(home, "repo"),
     configPath: join(home, "config.json"),
     runsPath: join(home, "runs.jsonl"),
     schedulerLogPath: join(home, "scheduler.log"),
-    launchAgentPath: join(homedir(), "Library", "LaunchAgents", "com.skill-sync.sync.plist"),
+    launchAgentPath: join(homedir(), "Library", "LaunchAgents", "com.skm.sync.plist"),
     lockPath: join(home, "sync.lock"),
-    agentHome: resolve(env.SKILL_SYNC_AGENT_HOME ?? homedir()),
+    agentHome: resolve(env.SKM_AGENT_HOME ?? homedir()),
   };
 }
 
@@ -55,7 +55,7 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     raw = JSON.parse(await readFile(paths.configPath, "utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(`skill-sync is not configured — run \`ss setup\``);
+      throw new Error(`skm is not configured — run \`skm setup\``);
     }
     if (error instanceof SyntaxError) {
       throw new Error(`${paths.configPath} is not valid JSON`);

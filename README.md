@@ -1,9 +1,9 @@
-# skill-sync
+# skm
 
 Keep one GitHub repository of agent skills and global instructions in sync across
 Linux and macOS devices.
 
-`skill-sync` keeps a canonical checkout at `~/.skill-sync/repo` and links each
+`skm` keeps a canonical checkout at `~/.skm/repo` and links each
 supported agent to it. An edit made through Claude, Codex, or an Agents-compatible
 tool therefore changes the same file. A background interval job commits those
 changes, integrates remote work with Git's three-way merge, and pushes the result.
@@ -13,18 +13,18 @@ changes, integrates remote work with Git's three-way merge, and pushes the resul
 Use it directly:
 
 ```bash
-npx skill-sync setup
+npx skmx setup
 ```
 
-Or install the two command aliases globally:
+Or install the `skm` command globally:
 
 ```bash
-npm install -g skill-sync
-ss setup
+npm install -g skmx
+skm setup
 ```
 
 Setup asks for a GitHub repository and a sync interval. It uses the `git` and `gh`
-already installed and authenticated on your machine; skill-sync has no OAuth flow and
+already installed and authenticated on your machine; skm has no OAuth flow and
 never stores a GitHub token. Run `gh auth login` first if needed.
 
 Because interval jobs have no interactive terminal, the Git credential method chosen
@@ -34,7 +34,7 @@ key that does not need a prompt.
 For an unattended setup, give every answer as a flag:
 
 ```bash
-ss setup --repo your-name/agent-library --branch main --interval 15
+skm setup --repo your-name/agent-library --branch main --interval 15
 ```
 
 The interval can be a whole number that divides evenly into 60, such as 5, 10, 15,
@@ -77,13 +77,13 @@ or reconcile those paths yourself, then rerun setup.
 ## Commands
 
 ```bash
-ss setup       # connect the repo, create links, and enable interval sync
-ss sync        # sync immediately
-ss logs        # show configuration and recent structured runs
-ss uninstall   # remove the interval job and links owned by skill-sync
+skm setup       # connect the repo, create links, and enable interval sync
+skm sync        # sync immediately
+skm logs        # show configuration and recent structured runs
+skm uninstall   # remove the interval job and links owned by skm
 ```
 
-`uninstall` always preserves `~/.skill-sync/repo`, `~/.skill-sync/runs.jsonl`, and
+`uninstall` always preserves `~/.skm/repo`, `~/.skm/runs.jsonl`, and
 the rest of the local state. It prints their paths so you can inspect or remove them
 deliberately.
 
@@ -99,25 +99,25 @@ One lock protects the entire lifecycle:
 
 Non-overlapping changes from multiple devices converge automatically. If the same
 lines overlap, the merge is aborted so agents never see conflict markers, nothing is
-pushed from that device, and `ss logs` gives the exact recovery command:
+pushed from that device, and `skm logs` gives the exact recovery command:
 
 ```bash
-cd ~/.skill-sync/repo
+cd ~/.skm/repo
 git merge origin/main
 # resolve the files, then:
 git add -A && git commit
-ss sync
+skm sync
 ```
 
-The previous prototype's union merge rule is removed. skill-sync never guesses how
+The previous prototype's union merge rule is removed. skm never guesses how
 to combine contradictory prose or duplicate YAML keys.
 
 ## Local state and scheduling
 
-Configuration and logs live under `~/.skill-sync/`:
+Configuration and logs live under `~/.skm/`:
 
 ```text
-~/.skill-sync/
+~/.skm/
   config.json
   repo/
   runs.jsonl
@@ -125,13 +125,13 @@ Configuration and logs live under `~/.skill-sync/`:
 ```
 
 Linux uses the user's crontab. macOS uses
-`~/Library/LaunchAgents/com.skill-sync.sync.plist`. Both invoke the same hidden
-coordinator used by `ss sync`; scheduled runs do not depend on an interactive shell.
+`~/Library/LaunchAgents/com.skm.sync.plist`. Both invoke the same hidden
+coordinator used by `skm sync`; scheduled runs do not depend on an interactive shell.
 
-For isolated testing, `SKILL_SYNC_HOME` moves the state directory and
-`SKILL_SYNC_AGENT_HOME` moves the projected agent home. Setup records those values
-and the current Node path in the background job. Run `ss setup` again after upgrading
-skill-sync or moving your Node installation so the registered job uses the new tool.
+For isolated testing, `SKM_HOME` moves the state directory and
+`SKM_AGENT_HOME` moves the projected agent home. Setup records those values
+and the current Node path in the background job. Run `skm setup` again after upgrading
+skm or moving your Node installation so the registered job uses the new tool.
 
 ## Development
 
