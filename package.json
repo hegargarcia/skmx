@@ -4,6 +4,15 @@
   "description": "Keep agent skills and global instructions in sync through GitHub",
   "type": "module",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hegargarcia/skill-sync.git"
+  },
+  "bugs": "https://github.com/hegargarcia/skill-sync/issues",
+  "homepage": "https://github.com/hegargarcia/skill-sync#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "skill-sync": "dist/index.js",
     "ss": "dist/index.js"
@@ -19,8 +28,9 @@
     "build": "node scripts/build.mjs",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
+    "test:package": "node scripts/smoke-package.mjs",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test && npm run build",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:package",
     "prepack": "npm run check"
   },
   "devDependencies": {
