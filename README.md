@@ -1,9 +1,9 @@
-# skm
+# skmx
 
 Keep one GitHub repository of agent skills and global instructions in sync across
 Linux and macOS devices.
 
-`skm` keeps a canonical checkout at `~/.skm/repo` and links each
+`skmx` keeps a canonical checkout at `~/.skmx/repo` and links each
 supported agent to it. An edit made through Claude, Codex, or an Agents-compatible
 tool therefore changes the same file. A background interval job commits those
 changes, integrates remote work with Git's three-way merge, and pushes the result.
@@ -16,15 +16,15 @@ Use it directly:
 npx skmx setup
 ```
 
-Or install the `skm` command globally:
+Or install the `skmx` command globally:
 
 ```bash
 npm install -g skmx
-skm setup
+skmx setup
 ```
 
 Setup asks for a GitHub repository and a sync interval. It uses the `git` and `gh`
-already installed and authenticated on your machine; skm has no OAuth flow and
+already installed and authenticated on your machine; skmx has no OAuth flow and
 never stores a GitHub token. Run `gh auth login` first if needed.
 
 Because interval jobs have no interactive terminal, the Git credential method chosen
@@ -34,7 +34,7 @@ key that does not need a prompt.
 For an unattended setup, give every answer as a flag:
 
 ```bash
-skm setup --repo your-name/agent-library --branch main --interval 15
+skmx setup --repo your-name/agent-library --branch main --interval 15
 ```
 
 The interval can be a whole number that divides evenly into 60, such as 5, 10, 15,
@@ -77,13 +77,13 @@ or reconcile those paths yourself, then rerun setup.
 ## Commands
 
 ```bash
-skm setup       # connect the repo, create links, and enable interval sync
-skm sync        # sync immediately
-skm logs        # show configuration and recent structured runs
-skm uninstall   # remove the interval job and links owned by skm
+skmx setup       # connect the repo, create links, and enable interval sync
+skmx sync        # sync immediately
+skmx logs        # show configuration and recent structured runs
+skmx uninstall   # remove the interval job and links owned by skmx
 ```
 
-`uninstall` always preserves `~/.skm/repo`, `~/.skm/runs.jsonl`, and
+`uninstall` always preserves `~/.skmx/repo`, `~/.skmx/runs.jsonl`, and
 the rest of the local state. It prints their paths so you can inspect or remove them
 deliberately.
 
@@ -99,25 +99,25 @@ One lock protects the entire lifecycle:
 
 Non-overlapping changes from multiple devices converge automatically. If the same
 lines overlap, the merge is aborted so agents never see conflict markers, nothing is
-pushed from that device, and `skm logs` gives the exact recovery command:
+pushed from that device, and `skmx logs` gives the exact recovery command:
 
 ```bash
-cd ~/.skm/repo
+cd ~/.skmx/repo
 git merge origin/main
 # resolve the files, then:
 git add -A && git commit
-skm sync
+skmx sync
 ```
 
-The previous prototype's union merge rule is removed. skm never guesses how
+The previous prototype's union merge rule is removed. skmx never guesses how
 to combine contradictory prose or duplicate YAML keys.
 
 ## Local state and scheduling
 
-Configuration and logs live under `~/.skm/`:
+Configuration and logs live under `~/.skmx/`:
 
 ```text
-~/.skm/
+~/.skmx/
   config.json
   repo/
   runs.jsonl
@@ -125,13 +125,13 @@ Configuration and logs live under `~/.skm/`:
 ```
 
 Linux uses the user's crontab. macOS uses
-`~/Library/LaunchAgents/com.skm.sync.plist`. Both invoke the same hidden
-coordinator used by `skm sync`; scheduled runs do not depend on an interactive shell.
+`~/Library/LaunchAgents/com.skmx.sync.plist`. Both invoke the same hidden
+coordinator used by `skmx sync`; scheduled runs do not depend on an interactive shell.
 
-For isolated testing, `SKM_HOME` moves the state directory and
-`SKM_AGENT_HOME` moves the projected agent home. Setup records those values
-and the current Node path in the background job. Run `skm setup` again after upgrading
-skm or moving your Node installation so the registered job uses the new tool.
+For isolated testing, `SKMX_HOME` moves the state directory and
+`SKMX_AGENT_HOME` moves the projected agent home. Setup records those values
+and the current Node path in the background job. Run `skmx setup` again after upgrading
+skmx or moving your Node installation so the registered job uses the new tool.
 
 ## Development
 

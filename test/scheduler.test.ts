@@ -4,7 +4,7 @@ import { cronEntry, launchAgentPlist, parseCrontabList } from "../src/scheduler.
 describe("interval scheduling", () => {
   it("renders an owned Linux cron entry with safely quoted arguments", () => {
     expect(cronEntry(15, ["/path with space/npx", "--yes", "skmx@0.1.0", "_scheduled"], "/tmp/sync log")).toBe(
-      "*/15 * * * * '/path with space/npx' '--yes' 'skmx@0.1.0' '_scheduled' >> '/tmp/sync log' 2>&1 # skm managed job",
+      "*/15 * * * * '/path with space/npx' '--yes' 'skmx@0.1.0' '_scheduled' >> '/tmp/sync log' 2>&1 # skmx managed job",
     );
     expect(cronEntry(60, ["npx"], "/tmp/log")).toMatch(/^0 \* \* \* \*/);
   });
@@ -14,12 +14,12 @@ describe("interval scheduling", () => {
       5,
       ["/opt/npm&node/npx", "_scheduled"],
       "/tmp/a<b.log",
-      { PATH: "/opt/node&npm/bin", SKM_HOME: "/tmp/custom<state" },
+      { PATH: "/opt/node&npm/bin", SKMX_HOME: "/tmp/custom<state" },
     );
     expect(plist).toContain("<integer>300</integer>");
     expect(plist).toContain("/opt/npm&amp;node/npx");
     expect(plist).toContain("/tmp/a&lt;b.log");
-    expect(plist).toContain("<key>SKM_HOME</key>");
+    expect(plist).toContain("<key>SKMX_HOME</key>");
     expect(plist).toContain("/tmp/custom&lt;state");
     expect(plist).toContain("/opt/node&amp;npm/bin");
     expect(plist).toContain("<key>RunAtLoad</key>");
@@ -28,10 +28,10 @@ describe("interval scheduling", () => {
   it("persists custom homes and the Node path in cron", () => {
     const line = cronEntry(15, ["/opt/node/bin/npx", "_scheduled"], "/tmp/log", {
       PATH: "/opt/node/bin:/usr/bin",
-      SKM_HOME: "/tmp/custom state",
+      SKMX_HOME: "/tmp/custom state",
     });
     expect(line).toContain("PATH='/opt/node/bin:/usr/bin'");
-    expect(line).toContain("SKM_HOME='/tmp/custom state'");
+    expect(line).toContain("SKMX_HOME='/tmp/custom state'");
   });
 
   it("distinguishes a missing crontab from a read failure", () => {

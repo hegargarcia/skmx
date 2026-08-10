@@ -14,7 +14,7 @@ type SetupFlags = { repo?: string; branch: string; interval?: number };
 
 export function createProgram() {
   const program = new Command()
-    .name("skm")
+    .name("skmx")
     .description("Keep agent skills and global instructions in sync through GitHub")
     .version(packageJson.version)
     .showHelpAfterError();
@@ -26,7 +26,7 @@ export function createProgram() {
     .option("-b, --branch <branch>", "branch to sync", "main")
     .option("-i, --interval <minutes>", "interval that divides 60 (for example 5, 15, 30, or 60)", parseInterval)
     .action(async (flags: SetupFlags) => {
-      p.intro(pc.inverse(" skm setup "));
+      p.intro(pc.inverse(" skmx setup "));
       const answers = await setupAnswers(flags);
       const progress = p.spinner();
       progress.start("checking GitHub, repository, and target paths");
@@ -142,7 +142,7 @@ async function setupAnswers(flags: SetupFlags) {
   if (p.isCancel(repo)) cancelSetup();
 
   const interval = flags.interval ?? (!process.stdin.isTTY ? 60 : await p.select({
-    message: "How often should skm run?",
+    message: "How often should skmx run?",
     initialValue: 60,
     options: [
       { value: 5, label: "Every 5 minutes" },

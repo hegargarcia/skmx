@@ -23,7 +23,7 @@ export async function withLock<T>(path: string, operation: () => Promise<T>): Pr
 
   try {
     if (await hasActiveContender(path, token)) {
-      throw new Error("another skm run is already active");
+      throw new Error("another skmx run is already active");
     }
     return await operation();
   } finally {

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { simpleGit, type SimpleGit } from "simple-git";
 import { sameRepo } from "./github.ts";
 
-const FALLBACK_AUTHOR = ["user.name=skm", "user.email=skmx@localhost"];
+const FALLBACK_AUTHOR = ["user.name=skmx", "user.email=skmx@localhost"];
 
 export async function prepareRepo(repo: string, branch: string, repoDir: string) {
   if (repo.startsWith("-")) throw new Error("the repository cannot start with a dash");
