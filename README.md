@@ -13,13 +13,13 @@ changes, integrates remote work with Git's three-way merge, and pushes the resul
 Use it directly:
 
 ```bash
-npx skmx setup
+npx @hjgr/skmx setup
 ```
 
 Or install the `skmx` command globally:
 
 ```bash
-npm install -g skmx
+npm install -g @hjgr/skmx
 skmx setup
 ```
 

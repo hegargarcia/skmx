@@ -1,5 +1,5 @@
 {
-  "name": "skmx",
+  "name": "@hjgr/skmx",
   "version": "0.1.0",
   "description": "Keep agent skills and global instructions in sync through GitHub",
   "type": "module",
