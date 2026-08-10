@@ -1,0 +1,52 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { withLock } from "../src/lock.ts";
+import { appendRun, readRuns, type RunRecord } from "../src/runs.ts";
+import { cleanupRoots, tempRoot } from "./helpers.ts";
+
+afterEach(cleanupRoots);
+
+describe("local run state", () => {
+  it("prevents overlapping coordinators and releases the lock", async () => {
+    const root = await tempRoot();
+    const path = join(root, "sync.lock");
+    let release!: () => void;
+    let markStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const first = withLock(path, async () => {
+      markStarted();
+      await gate;
+    });
+    await started;
+    await expect(withLock(path, async () => "second")).rejects.toThrow("already active");
+    release();
+    await first;
+    await expect(withLock(path, async () => "next")).resolves.toBe("next");
+  });
+
+  it("recovers a malformed stale lock", async () => {
+    const root = await tempRoot();
+    const path = join(root, "sync.lock");
+    await writeFile(path, JSON.stringify({ startedAt: "unknown" }));
+    await expect(withLock(path, async () => "ok")).resolves.toBe("ok");
+  });
+
+  it("reads newest valid structured runs and ignores damaged lines", async () => {
+    const root = await tempRoot();
+    const path = join(root, "runs.jsonl");
+    const record: RunRecord = {
+      startedAt: "2026-08-09T00:00:00.000Z",
+      finishedAt: "2026-08-09T00:00:01.000Z",
+      trigger: "manual",
+      status: "ok",
+      summary: "already in sync",
+      commit: "abc1234",
+    };
+    await appendRun(path, record);
+    await mkdir(root, { recursive: true });
+    await writeFile(path, `${JSON.stringify(record)}\nnot-json\n${JSON.stringify({ bad: true })}\n`);
+    await expect(readRuns(path)).resolves.toEqual([record]);
+  });
+});

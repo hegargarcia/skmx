@@ -1,28 +1,42 @@
 {
   "name": "skill-sync",
   "version": "0.1.0",
-  "module": "src/index.ts",
+  "description": "Keep agent skills and global instructions in sync through GitHub",
   "type": "module",
-  "private": true,
+  "private": false,
   "bin": {
-    "skill-sync": "src/index.ts"
+    "skill-sync": "dist/index.js",
+    "ss": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.12"
   },
   "scripts": {
-    "dev": "bunli dev",
-    "build": "bunli build",
-    "test": "bunli test",
-    "release": "bunli release"
+    "build": "node scripts/build.mjs",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test && npm run build",
+    "prepack": "npm run check"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "bunli": "^0.9.1"
-  },
-  "peerDependencies": {
-    "typescript": "^7.0.2"
+    "@types/node": "^24.3.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.6",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@bunli/core": "^0.9.1",
+    "@clack/prompts": "^1.7.0",
+    "commander": "^14.0.3",
+    "execa": "^9.6.1",
+    "picocolors": "^1.1.1",
     "simple-git": "^3.36.0",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   }
 }

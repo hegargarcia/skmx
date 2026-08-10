@@ -1,91 +1,91 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
 const DEFAULT_BRANCH = "main";
+const DEFAULT_INTERVAL_MINUTES = 60;
 
-const expandHome = (path: string) =>
-  path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
-
-const EnvSchema = z.object({
-  SKILL_SYNC_HOME: z.string().trim().min(1).optional(),
-  SKILL_SYNC_REPO: z.string().trim().min(1).optional(),
-  SKILL_SYNC_BRANCH: z.string().trim().min(1).optional(),
-  XDG_CONFIG_HOME: z.string().trim().min(1).optional(),
-  XDG_STATE_HOME: z.string().trim().min(1).optional(),
-});
-
-/** One skill to sync, and where this machine keeps it. */
-const SyncedSkillSchema = z.object({
-  name: z.string().trim().min(1),
-  path: z.string().trim().min(1).transform(expandHome),
-});
-
-export type SyncedSkill = z.output<typeof SyncedSkillSchema>;
-
-/** Shape of `config.json`; unknown keys are rejected so typos do not pass silently. */
-const FileSchema = z
+const ConfigFileSchema = z
   .object({
-    repo: z.string().trim().min(1).optional(),
-    branch: z.string().trim().min(1).optional(),
-    skills: z.array(SyncedSkillSchema).optional(),
-    checkout: z.string().trim().min(1).transform(expandHome).optional(),
+    repo: z.string().trim().min(1),
+    branch: z.string().trim().min(1).default(DEFAULT_BRANCH),
+    intervalMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(60)
+      .refine((minutes) => 60 % minutes === 0, "must divide evenly into one hour")
+      .default(DEFAULT_INTERVAL_MINUTES),
+    links: z.array(z.string().min(1)).default([]),
   })
   .strict();
 
-/** Environment variables win over `config.json`, which wins over the defaults. */
-export async function loadConfig() {
-  const env = EnvSchema.parse(Bun.env);
-  const home = expandHome(
-    env.SKILL_SYNC_HOME ??
-      join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "skill-sync"),
-  );
-  const configPath = join(home, "config.json");
-  const file = await readConfigFile(configPath);
+export type ConfigFile = z.infer<typeof ConfigFileSchema>;
 
-  const stateDir = join(
-    env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"),
-    "skill-sync",
-  );
+export type Config = ConfigFile & {
+  home: string;
+  repoDir: string;
+  configPath: string;
+  runsPath: string;
+  schedulerLogPath: string;
+  launchAgentPath: string;
+  lockPath: string;
+  agentHome: string;
+};
 
+export function configPaths(env: NodeJS.ProcessEnv = process.env) {
+  const home = resolve(env.SKILL_SYNC_HOME ?? join(homedir(), ".skill-sync"));
   return {
-    repo: env.SKILL_SYNC_REPO ?? file.repo,
-    branch: env.SKILL_SYNC_BRANCH ?? file.branch ?? DEFAULT_BRANCH,
-    skills: file.skills ?? [],
-    configPath,
-    /**
-     * A checkout of the repo you already keep and work in. Set it and skill-sync uses
-     * that instead of cloning its own, which stops two clones of one repo competing
-     * for the same agent directories.
-     */
-    checkout: file.checkout,
-    /** Where skill-sync puts its own clone when `checkout` is not set. */
-    reposDir: join(home, "repos"),
-    /** The home directory holding the agent directories that get linked. */
-    agentHome: homedir(),
-    stateDir,
-    statePath: join(stateDir, "state.json"),
-    schedulePath: join(stateDir, "schedule.json"),
-    cronLogPath: join(stateDir, "cron.log"),
-  } as const;
+    home,
+    repoDir: join(home, "repo"),
+    configPath: join(home, "config.json"),
+    runsPath: join(home, "runs.jsonl"),
+    schedulerLogPath: join(home, "scheduler.log"),
+    launchAgentPath: join(homedir(), "Library", "LaunchAgents", "com.skill-sync.sync.plist"),
+    lockPath: join(home, "sync.lock"),
+    agentHome: resolve(env.SKILL_SYNC_AGENT_HOME ?? homedir()),
+  };
 }
 
-export type Config = Awaited<ReturnType<typeof loadConfig>>;
+export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<Config> {
+  const paths = configPaths(env);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(paths.configPath, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`skill-sync is not configured — run \`ss setup\``);
+    }
+    if (error instanceof SyntaxError) {
+      throw new Error(`${paths.configPath} is not valid JSON`);
+    }
+    throw error;
+  }
 
-/** Tells the user where to put the setting they are missing. */
-export const missingRepoMessage = (configPath: string) =>
-  `no skills repo configured — set "repo" in ${configPath} (or SKILL_SYNC_REPO)`;
-
-async function readConfigFile(configPath: string) {
-  const file = Bun.file(configPath);
-  if (!(await file.exists())) return {};
-
-  const contents = await file.json().catch(() => {
-    throw new Error(`${configPath} is not valid JSON`);
-  });
-
-  const parsed = FileSchema.safeParse(contents);
-  if (!parsed.success) throw new Error(`${configPath}: ${z.prettifyError(parsed.error)}`);
-
-  return parsed.data;
+  const parsed = ConfigFileSchema.safeParse(raw);
+  if (!parsed.success) throw new Error(`${paths.configPath}: ${z.prettifyError(parsed.error)}`);
+  return { ...parsed.data, ...paths };
 }
+
+export async function saveConfig(file: ConfigFile, env: NodeJS.ProcessEnv = process.env) {
+  const paths = configPaths(env);
+  const parsed = ConfigFileSchema.parse(file);
+  await mkdir(dirname(paths.configPath), { recursive: true });
+  await writeFile(paths.configPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+  return { ...parsed, ...paths } satisfies Config;
+}
+
+export async function updateConfig(config: Config, file: ConfigFile) {
+  const parsed = ConfigFileSchema.parse(file);
+  await mkdir(dirname(config.configPath), { recursive: true });
+  await writeFile(config.configPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+  return { ...config, ...parsed } satisfies Config;
+}
+
+export const defaultConfig = (repo: string): ConfigFile => ({
+  repo,
+  branch: DEFAULT_BRANCH,
+  intervalMinutes: DEFAULT_INTERVAL_MINUTES,
+  links: [],
+});
