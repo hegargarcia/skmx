@@ -51,9 +51,8 @@ skills/
   writing/
     SKILL.md
     references/
-global/
-  AGENTS.md       # optional
-  CLAUDE.md       # optional
+AGENTS.md         # optional
+CLAUDE.md         # optional
 ```
 
 Each skill directory is linked into:
@@ -62,14 +61,18 @@ Each skill directory is linked into:
 - `~/.agents/skills/<name>`
 - `~/.codex/skills/<name>`
 
-Global files are linked to their matching agent locations. `AGENTS.md` goes to
-`~/.agents/AGENTS.md` and `~/.codex/AGENTS.md`; `CLAUDE.md` goes to
-`~/.claude/CLAUDE.md`.
+Global files live at the repository root and are linked to their matching agent
+locations. `AGENTS.md` goes to `~/.agents/AGENTS.md` and `~/.codex/AGENTS.md`.
+`CLAUDE.md` goes to `~/.claude/CLAUDE.md`; when it is absent, Claude shares the
+root `AGENTS.md` instead.
 
 Setup inspects every destination before changing any of them. A missing path is safe,
-and identical content can be adopted. If any destination contains different content,
-setup stops, lists every collision, and leaves the targets untouched. Move or
-reconcile those paths yourself, then rerun setup.
+and identical content can be adopted. This includes existing symlinks from a previous
+checkout: setup resolves and fingerprints them, then atomically repoints identical
+links into its canonical checkout without deleting the previous source. Unrelated
+links are ignored. If any desired destination is broken or contains different
+content, setup stops, lists every collision, and leaves all targets untouched. Move
+or reconcile those paths yourself, then rerun setup.
 
 ## Commands
 
@@ -89,7 +92,8 @@ deliberately.
 One lock protects the entire lifecycle:
 
 1. Validate all managed skills and YAML frontmatter.
-2. Commit changes under `skills/` and `global/` in the app-owned checkout.
+2. Commit changes under `skills/` and to root `AGENTS.md` or `CLAUDE.md` in the
+   app-owned checkout.
 3. Fetch and merge the configured remote branch with normal Git three-way behavior.
 4. Validate the merged tree, restore missing owned links, and push.
 
@@ -131,7 +135,7 @@ skill-sync or moving your Node installation so the registered job uses the new t
 
 ## Development
 
-Node 20.12 or newer is required. Bun is not.
+Node 24 is required. Bun is not.
 
 ```bash
 npm install

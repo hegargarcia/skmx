@@ -12,8 +12,9 @@ import { validateManagedTree } from "./validation.ts";
 
 const PUSH_ATTEMPTS = 3;
 const UNION_ATTRIBUTE = "skills/**/*.md merge=union";
-const MANAGED_PATHS = ["skills", "global", ".gitattributes"];
-const MANAGED_DIRECTORIES = ["skills", "global"];
+const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"];
+const MANAGED_PATHS = ["skills", ...INSTRUCTION_FILES, ".gitattributes"];
+const MANAGED_CONTENT = ["skills", ...INSTRUCTION_FILES];
 
 export type SyncTrigger = RunRecord["trigger"];
 type Outcome = Pick<RunRecord, "status" | "summary" | "commit">;
@@ -126,9 +127,11 @@ async function removeUnionAttribute(repoDir: string, git: SimpleGit) {
 
 async function commitManagedChanges(git: SimpleGit, repoDir: string) {
   await git.add(["-A", "--", "skills"]);
-  const globalExists = await access(join(repoDir, "global")).then(() => true).catch(() => false);
-  const globalTracked = (await git.raw(["ls-files", "--", "global"])).trim() !== "";
-  if (globalExists || globalTracked) await git.add(["-A", "--", "global"]);
+  for (const instruction of INSTRUCTION_FILES) {
+    const exists = await access(join(repoDir, instruction)).then(() => true).catch(() => false);
+    const tracked = (await git.raw(["ls-files", "--", instruction])).trim() !== "";
+    if (exists || tracked) await git.add(["-A", "--", instruction]);
+  }
   const staged = (await git.diff(["--cached", "--name-only", "--no-renames", "-z", "--", ...MANAGED_PATHS]))
     .split("\0")
     .filter(Boolean);
@@ -151,7 +154,7 @@ async function ignoredManagedFiles(git: SimpleGit) {
     "--ignored",
     "--exclude-standard",
     "--",
-    ...MANAGED_DIRECTORIES,
+    ...MANAGED_CONTENT,
   ]);
   return output.split("\n").map((path) => path.trim()).filter(Boolean);
 }

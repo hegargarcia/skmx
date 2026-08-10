@@ -14,7 +14,7 @@ describe("Git synchronization", () => {
     const device = await deviceConfig(remote);
     const first = await runSync(device.config);
     expect(first.status, first.summary).toBe("ok");
-    expect(first.summary).toContain("linked 5 targets");
+    expect(first.summary).toContain("linked 6 targets");
 
     const linked = join(device.config.agentHome, ".claude", "skills", "writing", "SKILL.md");
     await writeFile(linked, `${await readFile(linked, "utf8")}\nLocal edit.\n`);
@@ -80,7 +80,7 @@ describe("Git synchronization", () => {
     await git(seed, "push", "origin", "main");
     const device = await deviceConfig(remote);
     await runSync(device.config);
-    await writeFile(join(device.config.repoDir, "global", "AGENTS.md"), "local global edit\n");
+    await writeFile(join(device.config.repoDir, "AGENTS.md"), "local global edit\n");
     await writeFile(join(device.config.repoDir, "notes.txt"), "private local notes\n");
 
     const other = join(await tempRoot(), "other");
@@ -101,10 +101,11 @@ describe("Git synchronization", () => {
     const device = await deviceConfig(remote);
     await runSync(device.config);
     await writeFile(join(device.config.repoDir, "notes.txt"), "private scratch\n");
-    await writeFile(join(device.config.repoDir, "global", "AGENTS.md"), "managed edit\n");
+    await writeFile(join(device.config.repoDir, "AGENTS.md"), "managed edit\n");
     const result = await runSync(await loadConfig(device.env));
     expect(result.status).toBe("ok");
     await expect(git(device.root, "--git-dir", remote, "show", "main:notes.txt")).rejects.toThrow();
+    expect((await git(device.root, "--git-dir", remote, "show", "main:AGENTS.md")).stdout).toBe("managed edit");
   });
 
   it("does not commit an unrelated file that was already staged", async () => {
@@ -113,7 +114,7 @@ describe("Git synchronization", () => {
     await runSync(device.config);
     await writeFile(join(device.config.repoDir, "notes.txt"), "private staged scratch\n");
     await git(device.config.repoDir, "add", "notes.txt");
-    await writeFile(join(device.config.repoDir, "global", "AGENTS.md"), "managed edit\n");
+    await writeFile(join(device.config.repoDir, "AGENTS.md"), "managed edit\n");
 
     const result = await runSync(await loadConfig(device.env));
     expect(result.status).toBe("ok");
