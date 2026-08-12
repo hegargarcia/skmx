@@ -79,9 +79,14 @@ or reconcile those paths yourself, then rerun setup.
 ```bash
 skmx setup       # connect the repo, create links, and enable interval sync
 skmx sync        # sync immediately
+skmx status      # show sync health and the latest run
 skmx logs        # show configuration and recent structured runs
 skmx uninstall   # remove the interval job and links owned by skmx
 ```
+
+`status` reports the registered scheduler, latest sync, repository, and owned links.
+It exits non-zero when the latest run failed or a scheduled sync is overdue, so it can
+also be used as a health check in scripts.
 
 `uninstall` always preserves `~/.skmx/repo`, `~/.skmx/runs.jsonl`, and
 the rest of the local state. It prints their paths so you can inspect or remove them

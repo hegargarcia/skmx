@@ -7,6 +7,7 @@ import { withLock } from "./lock.ts";
 import { readRuns } from "./runs.ts";
 import { uninstallSchedule } from "./scheduler.ts";
 import { setup } from "./setup.ts";
+import { readStatus, type Health } from "./status.ts";
 import { runSync } from "./sync.ts";
 import { removeOwnedTargets } from "./targets.ts";
 
@@ -62,6 +63,28 @@ export function createProgram() {
       const run = await runSync(await loadConfig(), "manual");
       renderRun(run);
       if (run.status !== "ok") process.exitCode = 1;
+    });
+
+  program
+    .command("status")
+    .description("show sync health and the latest run")
+    .action(async () => {
+      const status = await readStatus(await loadConfig());
+      const schedule = status.scheduler
+        ? `every ${status.config.intervalMinutes} minutes (${status.scheduler})`
+        : "not scheduled";
+      const lastSync = status.lastRun
+        ? `${status.lastRun.finishedAt} — ${status.lastRun.status}: ${status.lastRun.summary}` +
+          (status.lastRun.commit ? ` (${status.lastRun.commit})` : "")
+        : "never";
+      console.log(pc.bold("skmx"));
+      console.log(`  ${"Health".padEnd(12)}${renderHealth(status.health)}`);
+      console.log(`  ${"Schedule".padEnd(12)}${schedule}`);
+      console.log(`  ${"Last sync".padEnd(12)}${lastSync}`);
+      console.log(`  ${"Repository".padEnd(12)}${status.config.repoDir}`);
+      console.log(`  ${"Remote".padEnd(12)}${status.config.repo} (${status.config.branch})`);
+      console.log(`  ${"Owned links".padEnd(12)}${status.config.links.length}`);
+      if (status.health.unhealthy) process.exitCode = 1;
     });
 
   program
@@ -165,6 +188,12 @@ function renderRun(run: Awaited<ReturnType<typeof runSync>>) {
   if (run.status === "ok") p.log.success(output);
   else if (run.status === "conflict") p.log.warn(output);
   else p.log.error(output);
+}
+
+function renderHealth(health: Health) {
+  if (health.kind === "ok") return pc.green(health.message);
+  if (health.unhealthy) return pc.red(health.message);
+  return pc.yellow(health.message);
 }
 
 function parseInterval(value: string) {

@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { cronEntry, launchAgentPlist, parseCrontabList } from "../src/scheduler.ts";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { cronEntry, launchAgentPlist, parseCrontabList, registeredScheduler } from "../src/scheduler.ts";
+import { cleanupRoots, tempRoot } from "./helpers.ts";
+
+afterEach(cleanupRoots);
 
 describe("interval scheduling", () => {
   it("renders an owned Linux cron entry with safely quoted arguments", () => {
@@ -42,6 +47,14 @@ describe("interval scheduling", () => {
       "0 1 * * * backup",
     ]);
     expect(() => parseCrontabList(1, "", "permission denied")).toThrow("could not read");
+  });
+
+  it("detects whether the managed launch agent is registered", async () => {
+    const root = await tempRoot();
+    const launchAgentPath = join(root, "com.skmx.sync.plist");
+    await expect(registeredScheduler({ launchAgentPath }, "darwin")).resolves.toBeNull();
+    await writeFile(launchAgentPath, "managed");
+    await expect(registeredScheduler({ launchAgentPath }, "darwin")).resolves.toBe("launchd");
   });
 
   it("rejects intervals cron cannot represent in V1", () => {

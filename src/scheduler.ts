@@ -44,6 +44,26 @@ export async function uninstallSchedule(
   return true;
 }
 
+export async function registeredScheduler(
+  config: Pick<Config, "launchAgentPath">,
+  platform: NodeJS.Platform = process.platform,
+) {
+  assertSupportedPlatform(platform);
+  if (platform === "darwin") {
+    return await access(config.launchAgentPath).then(() => "launchd" as const).catch(() => null);
+  }
+
+  try {
+    const current = await execa("crontab", ["-l"], { reject: false });
+    return parseCrontabList(current.exitCode, current.stdout, current.stderr).some(isManagedCronLine)
+      ? "cron" as const
+      : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 export function cronEntry(
   intervalMinutes: number,
   command: string[],
